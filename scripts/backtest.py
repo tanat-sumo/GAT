@@ -16,10 +16,28 @@ def load_data(path="data/gold_5m.csv"):
 
 
 def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
-                  contract="MGC", contracts=1, cost_pts=0.3, start_cap=50000):
+                  contract="MGC", contracts=1, cost_pts=0.3, start_cap=50000,
+                  regime_ma=None, session_hours=None, atr_period=None, atr_min_pts=None,
+                  confirm_bars=1):
+    """
+    regime_ma: if set (e.g. 100), only take longs when close > SMA(regime_ma), shorts when close < it
+    session_hours: if set, tuple (start_hour, end_hour) in the df's tz - only trade entries inside this window
+    atr_period/atr_min_pts: if set, skip entries when ATR(atr_period) < atr_min_pts (too quiet/choppy)
+    confirm_bars: require this many consecutive closes past sma before entry (1 = original behavior)
+    """
     df = df.copy()
     df["sma"] = df["close"].rolling(ma_period).mean()
-    df = df.dropna(subset=["sma"])
+    if regime_ma:
+        df["regime_sma"] = df["close"].rolling(regime_ma).mean()
+    if atr_period:
+        tr = pd.concat([
+            df["high"] - df["low"],
+            (df["high"] - df["close"].shift()).abs(),
+            (df["low"] - df["close"].shift()).abs(),
+        ], axis=1).max(axis=1)
+        df["atr"] = tr.rolling(atr_period).mean()
+    dropcols = ["sma"] + (["regime_sma"] if regime_ma else []) + (["atr"] if atr_period else [])
+    df = df.dropna(subset=dropcols)
 
     mult = CONTRACT_MULT[contract]
     if tp_pts is None:
@@ -35,6 +53,8 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
 
     prev_close = None
     prev_sma = None
+    pending_side = None  # confirm_bars tracking: side awaiting confirmation since the raw cross
+    pending_count = 0
 
     for ts, row in df.iterrows():
         c, h, l = row["close"], row["high"], row["low"]
@@ -64,10 +84,45 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
                     trades.append({"exit_ts": ts, "side": "short", "reason": "tp", "pnl": pnl})
                     position = 0
 
-        # signal: cross and close past sma
+        # confirm_bars: track a pending cross and require it to hold for N consecutive bars
+        crossed_up = crossed_dn = False
+        if prev_close is not None:
+            raw_up = prev_close <= prev_sma and c > row["sma"]
+            raw_dn = prev_close >= prev_sma and c < row["sma"]
+            if raw_up:
+                pending_side, pending_count = "up", 1
+            elif raw_dn:
+                pending_side, pending_count = "dn", 1
+            elif pending_side == "up" and c > row["sma"]:
+                pending_count += 1
+            elif pending_side == "dn" and c < row["sma"]:
+                pending_count += 1
+            else:
+                pending_side, pending_count = None, 0
+
+            if pending_side == "up" and pending_count >= confirm_bars:
+                crossed_up = True
+                pending_side, pending_count = None, 0
+            elif pending_side == "dn" and pending_count >= confirm_bars:
+                crossed_dn = True
+                pending_side, pending_count = None, 0
+
+        # signal: cross and close past sma, optionally confirmed + filtered
         if prev_close is not None and position == 0:
-            crossed_up = prev_close <= prev_sma and c > row["sma"]
-            crossed_dn = prev_close >= prev_sma and c < row["sma"]
+
+            if crossed_up and regime_ma and c <= row["regime_sma"]:
+                crossed_up = False
+            if crossed_dn and regime_ma and c >= row["regime_sma"]:
+                crossed_dn = False
+            if (crossed_up or crossed_dn) and session_hours:
+                hr = ts.hour
+                start_h, end_h = session_hours
+                in_session = (start_h <= hr < end_h) if start_h < end_h else (hr >= start_h or hr < end_h)
+                if not in_session:
+                    crossed_up = crossed_dn = False
+            if (crossed_up or crossed_dn) and atr_period and row["atr"] < atr_min_pts:
+                crossed_up = crossed_dn = False
+
             if crossed_up:
                 position = 1
                 entry_price = c
