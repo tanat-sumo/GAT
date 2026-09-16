@@ -17,12 +17,15 @@ def load_data(path="data/gold_5m.csv"):
 def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
                   contract="MGC", contracts=1, cost_pts=0.3, start_cap=50000,
                   regime_ma=None, session_hours=None, atr_period=None, atr_min_pts=None,
-                  confirm_bars=1):
+                  confirm_bars=1, trail_mode="fixed", breakeven_r=1.0):
     """
     regime_ma: if set (e.g. 100), only take longs when close > SMA(regime_ma), shorts when close < it
     session_hours: if set, tuple (start_hour, end_hour) in the df's tz - only trade entries inside this window
     atr_period/atr_min_pts: if set, skip entries when ATR(atr_period) < atr_min_pts (too quiet/choppy)
     confirm_bars: require this many consecutive closes past sma before entry (1 = original behavior)
+    trail_mode: "fixed" (original: fixed stop + fixed tp) or "ma_trail" (move stop to breakeven at
+      breakeven_r * stop_pts favorable move, then trail stop behind the MA itself, no fixed tp - exit
+      only when price genuinely trails back through the MA)
     """
     df = df.copy()
     df["sma"] = df["close"].rolling(ma_period).mean()
@@ -46,6 +49,8 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
     entry_price = None
     stop_price = None
     tp_price = None
+    risk_pts = None
+    breakeven_hit = False
     equity = start_cap
     trades = []
     equity_curve = []
@@ -58,15 +63,30 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
     for ts, row in df.iterrows():
         c, h, l = row["close"], row["high"], row["low"]
 
-        # manage open position: check stop/tp intrabar first
+        # manage open position: trail (if enabled) then check stop/tp intrabar
+        if position != 0 and trail_mode == "ma_trail":
+            if position == 1:
+                if not breakeven_hit and c >= entry_price + breakeven_r * risk_pts:
+                    breakeven_hit = True
+                    stop_price = max(stop_price, entry_price)
+                if breakeven_hit:
+                    stop_price = max(stop_price, row["sma"])
+            elif position == -1:
+                if not breakeven_hit and c <= entry_price - breakeven_r * risk_pts:
+                    breakeven_hit = True
+                    stop_price = min(stop_price, entry_price)
+                if breakeven_hit:
+                    stop_price = min(stop_price, row["sma"])
+
         if position != 0:
             if position == 1:
                 if l <= stop_price:
                     pnl = (stop_price - entry_price) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
-                    trades.append({"exit_ts": ts, "side": "long", "reason": "stop", "pnl": pnl})
+                    reason = "trail_stop" if (trail_mode == "ma_trail" and breakeven_hit) else "stop"
+                    trades.append({"exit_ts": ts, "side": "long", "reason": reason, "pnl": pnl})
                     position = 0
-                elif h >= tp_price:
+                elif trail_mode == "fixed" and h >= tp_price:
                     pnl = (tp_price - entry_price) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
                     trades.append({"exit_ts": ts, "side": "long", "reason": "tp", "pnl": pnl})
@@ -75,9 +95,10 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
                 if h >= stop_price:
                     pnl = (entry_price - stop_price) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
-                    trades.append({"exit_ts": ts, "side": "short", "reason": "stop", "pnl": pnl})
+                    reason = "trail_stop" if (trail_mode == "ma_trail" and breakeven_hit) else "stop"
+                    trades.append({"exit_ts": ts, "side": "short", "reason": reason, "pnl": pnl})
                     position = 0
-                elif l <= tp_price:
+                elif trail_mode == "fixed" and l <= tp_price:
                     pnl = (entry_price - tp_price) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
                     trades.append({"exit_ts": ts, "side": "short", "reason": "tp", "pnl": pnl})
@@ -130,12 +151,16 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
                 entry_price = c
                 stop_price = c - stop_pts
                 tp_price = c + tp_pts
+                risk_pts = stop_pts
+                breakeven_hit = False
                 trades.append({"entry_ts": ts, "side": "long", "entry_price": c})
             elif crossed_dn:
                 position = -1
                 entry_price = c
                 stop_price = c + stop_pts
                 tp_price = c - tp_pts
+                risk_pts = stop_pts
+                breakeven_hit = False
                 trades.append({"entry_ts": ts, "side": "short", "entry_price": c})
 
         prev_close, prev_sma = c, row["sma"]
