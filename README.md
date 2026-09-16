@@ -5,8 +5,13 @@ MA-cross 5min strategy, adapted from an NQ/MNQ setup, being tested on gold futur
 ## Status (2026-09-16)
 - Baseline backtest (yfinance, 60d, GC=F): positive but cherry-picked-looking (+$1,727 on ma20/stop8/rr2).
 - Grid sweep across ma/stop/rr (45 configs, same 60d): **only 10/45 profitable, median Sharpe -1.47.** Edge is fragile / param-sensitive on this sample. Overfitting risk.
-- Next: pull 1-2yr 5min history via IB (`scripts/ib_fetch_data.py`, needs IB Gateway running on paper acct) and run `scripts/walk_forward.py` (proper train/test split) before trusting any config.
-- **Do not paper trade live until walk-forward shows OOS Sharpe holds up.**
+- Experiment batch (train/test split, see RESEARCH_LOG.md): session-hours filter and regime+confirm_bars combo look most consistent train->test, but small sample (49-174 OOS trades), not proof.
+- **Paper trading IS live** (user decision, running anyway since it's fake money) — `scripts/paper_trade.py` runs every 5min via GitHub Actions (`.github/workflows/paper_trade.yml`), still on the unvalidated baseline config (ma20/stop8/rr2, no filters). Runs independent of any local machine.
+- Still open: pull longer history (1-2yr) for real walk-forward before trusting any config or switching the live config off baseline.
+
+## Backlog / might try later
+- Pull free long-history data from Dukascopy (tick data, no account needed, years back) as a faster proxy for walk-forward testing than waiting on IB signup. Caveat: spot XAUUSD not futures GC/MGC — good enough to validate strategy logic, but final numbers need confirming against real futures data before trusting exact P&L.
+- IB Gateway setup (`scripts/ib_fetch_data.py`) — exact contract match, needed eventually regardless of Dukascopy detour.
 
 ## Setup
 ```bash
