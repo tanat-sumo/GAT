@@ -1,0 +1,15 @@
+{
+  "capital": 50000.0,
+  "position": null,
+  "trades": [],
+  "last_processed_bar": "2026-09-16 04:55:00-04:00",
+  "config": {
+    "ma_period": 20,
+    "stop_pts": 8.0,
+    "rr": 2.0,
+    "contract": "MGC",
+    "contracts": 1,
+    "cost_pts": 0.3,
+    "start_cap": 50000.0
+  }
+}
