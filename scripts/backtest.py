@@ -5,8 +5,7 @@ import argparse
 import pandas as pd
 import numpy as np
 
-MGC_MULT = 10  # $ per point, Micro Gold futures
-CONTRACT_MULT = {"MGC": 10, "GC": 100}
+CONTRACT_MULT = {"MGC": 10, "GC": 100, "NQ": 20, "MNQ": 2}  # $ per point per contract
 
 
 def load_data(path="data/gold_5m.csv"):
@@ -115,9 +114,12 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
             if crossed_dn and regime_ma and c >= row["regime_sma"]:
                 crossed_dn = False
             if (crossed_up or crossed_dn) and session_hours:
-                hr = ts.hour
-                start_h, end_h = session_hours
-                in_session = (start_h <= hr < end_h) if start_h < end_h else (hr >= start_h or hr < end_h)
+                # each bound is hour or (hour, minute); compares by minute-of-day for precision
+                def _mins(x):
+                    return x * 60 if isinstance(x, (int, float)) else x[0] * 60 + x[1]
+                now_min = ts.hour * 60 + ts.minute
+                start_m, end_m = _mins(session_hours[0]), _mins(session_hours[1])
+                in_session = (start_m <= now_min < end_m) if start_m < end_m else (now_min >= start_m or now_min < end_m)
                 if not in_session:
                     crossed_up = crossed_dn = False
             if (crossed_up or crossed_dn) and atr_period and row["atr"] < atr_min_pts:
@@ -179,12 +181,13 @@ if __name__ == "__main__":
     ap.add_argument("--ma", type=int, default=20)
     ap.add_argument("--stop", type=float, default=8.0)
     ap.add_argument("--rr", type=float, default=2.0)
-    ap.add_argument("--contract", default="MGC", choices=["MGC", "GC"])
+    ap.add_argument("--contract", default="MGC", choices=["MGC", "GC", "NQ", "MNQ"])
+    ap.add_argument("--data", default="data/gold_5m.csv")
     ap.add_argument("--contracts", type=int, default=1)
     ap.add_argument("--cost", type=float, default=0.3, help="round-trip cost in points (spread+comm)")
     args = ap.parse_args()
 
-    df = load_data()
+    df = load_data(args.data)
     eq_df, closed, final = run_backtest(
         df, ma_period=args.ma, stop_pts=args.stop, rr=args.rr,
         contract=args.contract, contracts=args.contracts, cost_pts=args.cost,

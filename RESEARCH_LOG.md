@@ -45,3 +45,10 @@ Split: train=9438 bars (first 70%), test=4046 bars (last 30%, out-of-sample)
 - **Regime + confirm_bars=2 combined**: train 1.34 -> test 1.47. Also consistent, both positive, similar magnitude. Second-best candidate.
 
 **Honest caveat on all of this:** test-window trade counts are 49-174 - small enough that "consistent Sharpe" could still be luck, not proof. This is still the same 60-day yfinance sample split two ways, not independent data. Real validation needs the longer IB history + proper walk-forward (multiple independent test windows, not one 70/30 split). Treat "session filter" and "regime+confirm2" as the current best leads to test further, not as validated.
+
+## NQ/MNQ comparison test (2026-09-16)
+User said the MA-cross strategy is actually proven on NQ/MNQ (not gold - gold was always the unproven experiment). Ran the same grid sweep on NQ 60d 5min data to compare.
+- Baseline sweep (no session filter, stop grid 15/25/40pt scaled to NQ's ~23pt median 5min range): **5/45 profitable, median Sharpe -4.76.** Worse than gold's 10/45.
+- Added NY regular session filter (9:30am-4pm ET, per user's description of their real filter): **1/45 profitable, median Sharpe -4.04.** Still bad, slightly less bad.
+- **Conclusion: this simple mechanical translation (SMA cross + close-past-MA entry + fixed point stop/TP) does not reproduce a working NQ/MNQ strategy**, despite user's real-world experience that one exists. Most likely explanation: the user said "it's mainly about risk management after that" - i.e. the actual edge likely lives in discretionary trade management (moving stop to breakeven, trailing, cutting losers early, letting winners run past a fixed TP, or selective entries not just every cross) that a fixed-stop/fixed-TP backtest structurally cannot capture. This is a translation gap, not proof the real strategy doesn't work - just proof this particular code doesn't represent it.
+- Not pursued further without more detail on the actual risk-management rules from the user.
