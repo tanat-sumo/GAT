@@ -153,6 +153,17 @@ The fix is to iterate every bar after `last_processed_bar` instead of only the l
 separately, to accept that GH Actions cron cannot be relied on for 5-min granularity). Flagging for
 the user to approve.
 
+**Fixed 2026-09-18** (user approved): `paper_trade.py` now walks every bar strictly after
+`last_processed_bar` in order (stop/tp check then entry check per bar, same semantics as
+`backtest.py`'s loop) instead of only looking at `df.iloc[-1]`. yfinance's rolling fetch window
+still holds bars from a missed poll (observed gaps up to 62min, well under the window), so a
+skipped stop-out now gets booked correctly instead of silently vanishing. Dry-run tested against
+the live state before pushing (cleanly replayed 3 missed bars, no discrepancy). Does not retroactively
+correct trades already recorded before the fix - those stay as they were logged, only forward
+behavior changes. GH Actions cron timing itself is still not fixed (still jittery/unreliable as a
+*trigger*), but no longer matters for correctness now that every bar gets replayed regardless of
+when the poll actually fires.
+
 ### Market context (why 2026-09-16 was rough)
 The FOMC on 2026-09-16 hiked 25bp to 3.75-4.00% with a hawkish dot plot (16 of 18 officials seeing
 another hike in 2026). Gold spiked >1% to ~$4,365 intraday then reversed to close -1.2%. That
