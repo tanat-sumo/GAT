@@ -21,7 +21,9 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
                   contract="MGC", contracts=1, cost_pts=0.3, start_cap=50000,
                   regime_ma=None, session_hours=None, atr_period=None, atr_min_pts=None,
                   confirm_bars=1, trail_mode="fixed", breakeven_r=1.0,
-                  stop_mode="fixed", atr_stop_mult=None, atr_series=None):
+                  stop_mode="fixed", atr_stop_mult=None, atr_series=None,
+                  trail_buffer_pts=0.0, trail_buffer_atr=None, trail_ma_period=None,
+                  trail_timing="next_bar"):
     """
     regime_ma: if set (e.g. 100), only take longs when close > SMA(regime_ma), shorts when close < it
     session_hours: if set, tuple (start_hour, end_hour) in the df's tz - only trade entries inside this window
@@ -34,12 +36,41 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
     trail_mode: "fixed" (original: fixed stop + fixed tp) or "ma_trail" (move stop to breakeven at
       breakeven_r * stop_pts favorable move, then trail stop behind the MA itself, no fixed tp - exit
       only when price genuinely trails back through the MA)
+    trail_buffer_pts / trail_buffer_atr: slack between the trailing stop and the MA line, so the stop
+      does not sit exactly on the indicator (the 2026-09-16 ma_trail failure was attributed to price
+      whipsawing through a stop parked on a fast MA). Buffer = trail_buffer_pts +
+      trail_buffer_atr * ATR(atr_period) at the current bar; long stop = MA - buffer, short stop =
+      MA + buffer. Defaults (0.0 / None) reproduce the original hug-the-MA behavior exactly.
+    trail_ma_period: MA used for the *trail* only, leaving the entry MA (ma_period) untouched. This
+      separates the "slower trail" axis from the "different entries" axis, which would otherwise be
+      confounded. Computed with min_periods=1 so the bar set is identical for every trail period.
+      None = trail on the entry MA (original behavior).
+    trail_timing: "next_bar" (default) applies each trail update only from the following bar onward,
+      so the stop is never moved using information from inside the bar it is then checked against.
+      "close" is the original behavior - update from this bar's close, then test that same bar's
+      high/low - kept only to reproduce pre-2026-09-18 runs; it peeks and should not be used for
+      new results.
+
+    NOTE 2026-09-18: two fill bugs were fixed here, both of which made every pre-fix ma_trail number
+    optimistic (see RESEARCH_LOG). (1) The MA trail could set a long's stop ABOVE the market (or a
+    short's below it) whenever the trail MA sat on the wrong side of price; the stop then "filled"
+    instantly at a price that never traded, manufacturing hundreds of points of phantom profit.
+    (2) Stops and targets always filled exactly at their level, even when the bar opened straight
+    through it; fills now happen at the open in that case.
     """
     if stop_mode == "atr" and not (atr_period and atr_stop_mult):
         raise ValueError("stop_mode='atr' requires atr_period and atr_stop_mult")
+    if trail_buffer_atr and not atr_period:
+        raise ValueError("trail_buffer_atr requires atr_period")
+    if trail_timing not in ("close", "next_bar"):
+        raise ValueError("trail_timing must be 'close' or 'next_bar'")
 
     df = df.copy()
     df["sma"] = df["close"].rolling(ma_period).mean()
+    if trail_ma_period:
+        # min_periods=1 on purpose: keeps the bar set identical across trail periods so a
+        # slow-vs-fast trail comparison is not confounded by different numbers of dropped bars
+        df["trail_sma"] = df["close"].rolling(trail_ma_period, min_periods=1).mean()
     if regime_ma:
         df["regime_sma"] = df["close"].rolling(regime_ma).mean()
     if atr_period:
@@ -76,46 +107,76 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
     pending_side = None  # confirm_bars tracking: side awaiting confirmation since the raw cross
     pending_count = 0
 
+    trail_col = "trail_sma" if trail_ma_period else "sma"
+
+    def _trail_update(row, c):
+        """Breakeven then buffered MA trail. Returns the new stop (never loosened)."""
+        nonlocal stop_price, breakeven_hit
+        buf = trail_buffer_pts
+        if trail_buffer_atr:
+            buf += trail_buffer_atr * row["atr"]
+        if position == 1:
+            if not breakeven_hit and c >= entry_price + breakeven_r * risk_pts:
+                breakeven_hit = True
+                stop_price = max(stop_price, min(entry_price, c))
+            if breakeven_hit:
+                lvl = row[trail_col] - buf
+                # BUGFIX 2026-09-18: a long's stop can never sit ABOVE the market. Without this
+                # guard, trailing on an MA that is above price (routine with a slow trail MA)
+                # set stop > close, the l <= stop test fired immediately, and the trade was
+                # booked at a price that never traded - phantom profits of hundreds of points.
+                if lvl < c:
+                    stop_price = max(stop_price, lvl)
+        elif position == -1:
+            if not breakeven_hit and c <= entry_price - breakeven_r * risk_pts:
+                breakeven_hit = True
+                stop_price = min(stop_price, max(entry_price, c))
+            if breakeven_hit:
+                lvl = row[trail_col] + buf
+                if lvl > c:
+                    stop_price = min(stop_price, lvl)
+
     for ts, row in df.iterrows():
         c, h, l = row["close"], row["high"], row["low"]
 
         # manage open position: trail (if enabled) then check stop/tp intrabar
-        if position != 0 and trail_mode == "ma_trail":
-            if position == 1:
-                if not breakeven_hit and c >= entry_price + breakeven_r * risk_pts:
-                    breakeven_hit = True
-                    stop_price = max(stop_price, entry_price)
-                if breakeven_hit:
-                    stop_price = max(stop_price, row["sma"])
-            elif position == -1:
-                if not breakeven_hit and c <= entry_price - breakeven_r * risk_pts:
-                    breakeven_hit = True
-                    stop_price = min(stop_price, entry_price)
-                if breakeven_hit:
-                    stop_price = min(stop_price, row["sma"])
+        if position != 0 and trail_mode == "ma_trail" and trail_timing == "close":
+            _trail_update(row, c)
 
         if position != 0:
+            # gap-aware fill: a level set BEFORE this bar fills at the open when the bar opens
+            # through it (worse than the level for a stop, better for a tp). Only applies when the
+            # level predates the bar - under the legacy trail_timing="close" the trail level is
+            # derived from this same bar's close, so pairing it with this bar's open is meaningless
+            # and the level itself is used.
+            level_predates_bar = not (trail_mode == "ma_trail" and trail_timing == "close"
+                                      and breakeven_hit)
+            o = row["open"]
             if position == 1:
                 if l <= stop_price:
-                    pnl = (stop_price - entry_price) * mult * contracts - cost_pts * mult * contracts
+                    fill = min(stop_price, o) if level_predates_bar else stop_price
+                    pnl = (fill - entry_price) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
                     reason = "trail_stop" if (trail_mode == "ma_trail" and breakeven_hit) else "stop"
                     trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "long", "reason": reason, "pnl": pnl, "stop_dist": risk_pts})
                     position = 0
                 elif trail_mode == "fixed" and h >= tp_price:
-                    pnl = (tp_price - entry_price) * mult * contracts - cost_pts * mult * contracts
+                    fill = max(tp_price, o)
+                    pnl = (fill - entry_price) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
                     trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "long", "reason": "tp", "pnl": pnl, "stop_dist": risk_pts})
                     position = 0
             elif position == -1:
                 if h >= stop_price:
-                    pnl = (entry_price - stop_price) * mult * contracts - cost_pts * mult * contracts
+                    fill = max(stop_price, o) if level_predates_bar else stop_price
+                    pnl = (entry_price - fill) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
                     reason = "trail_stop" if (trail_mode == "ma_trail" and breakeven_hit) else "stop"
                     trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "short", "reason": reason, "pnl": pnl, "stop_dist": risk_pts})
                     position = 0
                 elif trail_mode == "fixed" and l <= tp_price:
-                    pnl = (entry_price - tp_price) * mult * contracts - cost_pts * mult * contracts
+                    fill = min(tp_price, o)
+                    pnl = (entry_price - fill) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
                     trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "short", "reason": "tp", "pnl": pnl, "stop_dist": risk_pts})
                     position = 0
@@ -189,6 +250,11 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
                 risk_pts = this_stop
                 breakeven_hit = False
                 trades.append({"entry_ts": ts, "side": "short", "entry_price": c})
+
+        # "next_bar" timing: the trail computed from this bar's close only takes effect on the NEXT
+        # bar, so the stop is never moved using information from inside the bar it is checked against
+        if position != 0 and trail_mode == "ma_trail" and trail_timing == "next_bar":
+            _trail_update(row, c)
 
         prev_close, prev_sma = c, row["sma"]
         equity_curve.append({"ts": ts, "equity": equity})

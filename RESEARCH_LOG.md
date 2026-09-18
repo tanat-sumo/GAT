@@ -342,3 +342,211 @@ config P&L is robust to neither its stop width nor its cost assumption.
 60-day yfinance sample; 6 windows of ~10 days; tens of trades per window. Payoff $157 win /-$83 loss
 => breakeven win rate 34.6% vs measured ~36%. Everything above is directional evidence about *this
 sample*, and the main thing it establishes is how little this sample can establish.
+
+## NQ/MNQ breakeven+trail, widened parameter search (2026-09-18, run 3)
+
+**Why.** The 2026-09-16 breakeven+MA-trail attempt went 0/30 with one fixed setting (breakeven_r=1.0,
+trail hugging the raw MA, no slack). That is one point in a parameter space, not a test of the idea.
+This run widens the search along the axes implied by *why* it was thought to fail (a stop parked on a
+fast MA is inside normal 5-min noise): the breakeven trigger, slack between the stop and the MA, the
+speed of the trailing MA, the initial stop, and the entry MA.
+
+New code: `trail_buffer_pts` / `trail_buffer_atr` / `trail_ma_period` / `trail_timing` in
+`backtest.py`, and `scripts/wf_nq_trail.py` (grid + controls), `scripts/nq_entry_edge.py` (entry
+diagnostic). Data: refreshed yfinance NQ=F 5min, 13,663 bars, 2026-07-09 -> 2026-09-17 23:45 ET.
+MNQ sizing ($2/pt), 1.0pt round-trip cost, 6 non-overlapping windows (~10 days each), fixed configs,
+no per-window refitting.
+
+### Two engine bugs found first, both in the trail logic (all pre-fix ma_trail numbers are void)
+
+The first grid run produced a "+$35,225, 6/6 windows, Sharpe 18" config. That is not a finding, it is
+a symptom, and chasing it found two real bugs:
+
+1. **Phantom fills.** The trail did `stop = max(stop, trail_MA)` for longs with no check that the
+   level was below the market. Whenever the trail MA sat *above* price (routine with a slow trail
+   MA), the long's stop was set above the close, the `low <= stop` test fired on that same bar, and
+   the trade was booked at that stop price. Concrete case: a long entered at 28,096.00 on
+   2026-07-27 12:20 ET "exited" 5 minutes later at 28,579.26 for +$964 - on a bar whose **high was
+   28,204.50**. 375 points of profit at a price that never traded. Fixed: the trail only ratchets to
+   a level on the correct side of the current close.
+2. **Intrabar peek in the trail timing.** The trail was updated from bar *t*'s close and then checked
+   against bar *t*'s own high/low - i.e. the stop was moved using the end of a bar and then applied
+   to price action that had already happened earlier in that same bar. This manufactures stop-outs.
+   Fixed by defaulting to `trail_timing="next_bar"` (a trail level computed at a bar's close only
+   applies from the next bar on); the old behavior is kept as `trail_timing="close"` for archaeology
+   only.
+
+Also fixed while in there: stops and targets always filled exactly at their level even when a bar
+opened straight through them; fills now happen at the open in that case (matters at session gaps).
+
+Impact, same data, old engine vs new (full-sample P&L):
+
+| case | old | new | delta |
+|---|---|---|---|
+| gold baseline ma20/stop8/rr2 (fixed mode) | +$1,229 | +$1,026 | -$203 |
+| gold regime100+confirm2 (fixed mode) | +$638 | +$232 | -$406 |
+| NQ fixed ma20/stop25/rr2 | -$5,606 | -$5,060 | +$546 |
+| NQ ma_trail ma20/stop25/be1R | -$15,356 | -$5,235 | **+$10,120** |
+| NQ ma_trail ma10/stop15/be1R | -$25,634 | -$8,418 | **+$17,216** |
+| gold ma_trail ma20/stop8/be1R | +$805 | +$3,938 | +$3,133 |
+
+Decomposition on the NQ case: phantom fills were worth +$1,221 (optimistic, as expected), the
+intrabar peek was worth **-$11,342** (pessimistic). **The 2026-09-16 "0/30 profitable, median Sharpe
+-11.26" result was produced by an engine that manufactured much of the whipsaw it then diagnosed.**
+The standing explanation in this log - "trailing tight against a fast MA whipsaws constantly" - was
+substantially a backtester artifact, not a fact about the market. Those numbers should not be cited
+again. Fixed-mode (non-trail) numbers move only slightly, so earlier non-trail conclusions stand.
+
+### Mechanism check (before the P&L): does slack do what it is supposed to?
+ma20 / stop25 / be1.0R, full sample, buffer as a multiple of ATR(14) (NQ ATR14 median ~24pt):
+
+| buffer | trades | median hold (bars) | p90 hold | avg win | avg loss | win rate | P&L |
+|---|---|---|---|---|---|---|---|
+| 0.0x (hug the MA) | 1094 | 4 | 22 | $121 | -$44 | 23.9% | -$5,235 |
+| 0.5x | 987 | 4 | 25 | $148 | -$42 | 18.7% | -$6,159 |
+| 1.0x | 889 | 4 | 27 | $168 | -$41 | 16.6% | -$5,272 |
+| 2.0x | 763 | 4 | 34 | $219 | -$39 | 12.5% | -$4,941 |
+| 3.0x | 704 | 4 | 37 | $265 | -$38 | 9.5% | -$6,245 |
+
+The buffer does mechanically what it was supposed to do - winners run ~2x further and trades are held
+~70% longer at the 90th percentile - and it **still doesn't help**, because win rate falls in almost
+exact proportion. The trade-off is flat. That is the shape of a strategy with no edge to redistribute.
+
+### P1 - full grid, 480 configs x 6 independent windows
+Axes: breakeven_r {0.5, 1, 1.5, 2} x trail buffer {0, 0.5, 1, 2, 3} x ATR14 x trail MA
+{entry MA, 50, 200} x initial stop {15, 25, 40, 60} x entry MA {20, 50}.
+
+- **Profitable over the 6 windows: 7 of 480.** Median config -$4,462, spread -$12,311 .. +$2,596.
+- Distribution of profitable windows per config: 0 windows: 52, 1: 166, 2: 165, 3: 87, 4: 7, 5: 3,
+  **6: none**. If each window were a coin flip you would expect ~165 of 480 configs to reach >=4/6;
+  **10 do.** The grid sits far below a zero-edge null - this is a negative-drift system, not a
+  hidden-edge one.
+- Best config: `ma20 stop60 be1R buf0xATR trailma50`, +$2,596 over 355 trades = **+$7.31/trade**,
+  against a 1.0pt ($2) assumed round-trip cost.
+- Marginal effect of each axis (mean P&L, averaging over the others) is negative everywhere and flat:
+  breakeven_r -$4,162..-$5,291, buffer -$4,285..-$4,832, trail MA -$4,461..-$4,890, stop
+  -$3,103..-$5,279, entry MA -$3,835..-$5,394. No axis has a direction, let alone an optimum.
+
+### P2 CONTROL (the load-bearing one) - does in-sample selection transfer?
+Split the 6 windows train/test at 4 points, pick the grid's best config on train, score it on test:
+
+| train/test windows | picked config | train P&L | test P&L | grid test median | picked's percentile in grid | Spearman(train, test) |
+|---|---|---|---|---|---|---|
+| 2 / 4 | ma20 stop25 be2R buf0.5xATR trailma50 | +$3,829 | -$4,953 | -$3,301 | **0.25** | **-0.25** |
+| 3 / 3 | ma20 stop40 be1R buf0xATR trailma50 | +$3,106 | -$2,448 | -$1,946 | **0.32** | **-0.06** |
+| 4 / 2 | ma20 stop40 be1R buf1xATR trailma200 | +$3,102 | -$1,970 | -$943 | **0.20** | **-0.28** |
+| 5 / 1 | ma20 stop40 be1.5R buf0xATR trailma50 | +$2,063 | -$1,055 | +$408 | **0.08** | **-0.24** |
+
+Every in-sample winner loses money out of sample, and lands **below the median config** - at the
+8th-32nd percentile of the grid it was picked from. Train/test rank correlation is negative at all
+four splits. Choosing these parameters on past windows is not merely worthless here, it is slightly
+worse than choosing at random. Same verdict the session-rotation and stop-width controls gave, now
+for the trail parameters.
+
+### P3 CONTROL - neighbourhood of the grid winner
+One step along each axis from `ma20 stop60 be1R buf0xATR trailma50` (+$2,596):
+
+| perturbation | P&L | perturbation | P&L |
+|---|---|---|---|
+| be_r 0.5 | -$5,074 | buffer 1.0xATR | -$8,071 |
+| be_r 1.5 | -$4,212 | buffer 2.0xATR | -$6,864 |
+| be_r 2.0 | -$5,357 | buffer 3.0xATR | -$9,316 |
+| buffer 0.5xATR | -$4,598 | trail MA = entry MA | -$3,994 |
+| stop 15 | -$8,441 | trail MA 200 | -$7,022 |
+| stop 25 | -$4,238 | entry MA 50 | -$7,685 |
+| stop 40 | +$658 | | |
+
+**13 of 14 one-step neighbours lose money**; the neighbourhood spans -$9,316..+$2,596, a range ~4.5x
+the winner's entire P&L. Same knife edge as the gold 8pt stop. No plateau, no edge.
+
+### P4/P5/P6 CONTROLS - window placement, engine timing, cost (top 8 configs)
+| config | base | windows offset by half | legacy trail timing | cost 2.0pt |
+|---|---|---|---|---|
+| ma20 stop60 be1R buf0 trailma50 | +$2,596 (5/6) | +$2,060 (3/6) | +$731 | +$1,886 |
+| ma20 stop40 be1R buf1xATR trailma200 | +$1,133 (5/6) | -$2,090 (3/6) | -$3,026 | +$413 |
+| ma20 stop40 be1.5R buf0 trailma50 | +$1,009 (4/6) | +$1,618 (4/6) | -$2,542 | +$101 |
+| ma20 stop40 be1R buf0 trailma50 | +$658 (4/6) | -$1,720 (3/6) | -$3,622 | -$398 |
+| ma50 stop25 be1R buf1xATR trailma200 | +$620 (3/6) | -$203 (3/6) | -$8,483 | -$210 |
+| ma20 stop40 be1R buf0.5xATR trailma200 | +$382 (5/6) | -$1,070 (3/6) | -$1,736 | -$378 |
+| ma20 stop25 be2R buf3xATR trailma50 | +$100 (3/6) | -$424 (3/6) | -$1,253 | -$894 |
+| ma50 stop25 be0.5R buf1xATR trailma200 | -$48 (2/6) | -$1,059 (3/6) | -$12,594 | -$1,014 |
+
+**6 of 8 flip negative** when the window boundaries move by half a window; **5 of 8** die at a 2.0pt
+cost assumption. Only the top config survives all three - which is what the single best of 480 draws
+from a noisy distribution does by construction, and its own neighbourhood (P3) says it is a spike.
+
+Reference points on the same windows: fixed stop/TP ma20/stop25 -$4,945 (3/6), fixed ma50/stop40
++$761 (3/6), original hug-the-MA trail -$5,053 (2/6).
+
+### The decisive test: the entries have no edge for ANY exit rule to harvest
+`scripts/nq_entry_edge.py` measures the MA cross itself, with no exit rule at all, against a control
+of randomly chosen entry timestamps carrying the same long/short sequence (so sample drift cancels).
+
+Mean signed forward move after an MA20 cross, in points: **-1.40** (3 bars), -0.42 (6), -1.47 (12),
+-1.00 (24), -1.67 (48), -0.54 (96). Every horizon negative, every |t| < 1.7, every value inside the
+random-entry control band (percentile 0.06-0.43). MA10 and MA50 give the same picture (MA50: -0.75,
++0.43, -1.16, -1.55, -2.13, +0.46).
+
+MFE/MAE race - does price reach +x before -x within 96 bars, vs the random-entry control?
+
+| x (pts) | MA20 signals | random control | edge |
+|---|---|---|---|
+| 10 | 40.7% | 39.8% | +0.9pp |
+| 20 | 47.3% | 49.4% | -2.0pp |
+| 40 | 48.0% | 48.5% | -0.5pp |
+| 60 | 49.5% | 50.1% | -0.6pp |
+
+Per-window mean signed move at a 2h horizon is positive in **1 of 6** windows for both MA20 and MA50.
+
+**An MA cross on NQ 5-min bars is not distinguishable from a randomly timed entry.** Expectancy
+before costs is zero-to-negative at every horizon from 15 minutes to 8 hours. No stop, target,
+breakeven rule or trail can create positive expectancy from a signal that has none - exit rules only
+redistribute a zero-sum pool and then pay costs out of it. That is why the buffer sweep shows a flat
+trade-off (bigger winners bought with proportionally fewer of them), and why the 480-config grid is
+7/480 rather than the ~165/480 chance alone would give.
+
+### Verdict
+**H falsified.** The 2026-09-16 failure was not a parameterization failure. Widening the search to 480
+configs across breakeven trigger, trail slack, trail-MA speed, stop width and entry MA does not
+produce a config that survives out-of-sample parameter selection (negative rank correlation at all
+four splits; winners land below the grid median), a one-step neighbourhood check (13/14 neighbours
+negative), a half-window shift (6/8 flip), or a doubled cost assumption (5/8 die). Underneath all of
+it, the entry signal has no measurable forward edge versus randomly timed entries.
+
+Two engine bugs were fixed in the process, and the previously logged reason for the 2026-09-16
+failure ("the MA trail whipsaws") was substantially a backtester artifact. The corrected engine makes
+the trail *much* less bad (-$15,356 -> -$5,235 on the reference config) - but "much less bad" is the
+whole of it.
+
+**What this does and does not say.** It says this mechanical translation - SMA cross entry plus a
+breakeven-and-trail exit, in any of 480 parameterizations - has no edge on 60 days of NQ 5-min. It
+does not say the user's discretionary NQ/MNQ approach has no edge; it says the edge, if it exists, is
+not in this entry signal, so no amount of exit-rule search will recover it. **Any further NQ work
+should start at the entry, not the exit.** `nq_entry_edge.py` is a ~30-second screen for any
+candidate entry rule and should be run *before* any grid: a signal that fails it cannot be rescued
+downstream.
+
+### Standing caveats
+Same as every other entry here: 60 days, ~10 days per window, one instrument, yfinance continuous
+front-month (NQ=F) rather than a properly rolled contract. The entry-edge null is the robust part
+(2,442 / 1,713 / 1,020 signals, with controls); the individual grid P&Ls are noise by construction and
+should not be quoted as estimates of anything.
+
+### Addendum - the same entry screen on gold (GC=F), since the live bot depends on it
+
+Ran `scripts/nq_entry_edge.py data/gold_5m.csv` (same 13,700-bar sample the gold work uses). Gold is
+not as bad as NQ, but it is not distinguishable from random either:
+
+- MA20 cross, mean signed forward move (pts): +0.02 (3 bars), +0.10 (6), -0.03 (12), +0.24 (24),
+  +0.12 (48), +0.03 (96). All |t| <= 0.53, all inside the random-entry control band (percentiles
+  0.46-0.73). MA10 is the same, centred on zero.
+- MFE/MAE race vs random-entry control: +2.8pp at x=10, +2.0pp at 20, **-0.5pp at 40**, +5.1pp at 60
+  (only 323 decided). Non-monotone and smaller than the control's own sampling spread.
+- Per-window mean 2h move is positive in 5/6 windows for MA20 - the most encouraging number in this
+  addendum - but the magnitudes (+0.08 to +0.71 pts) are a fraction of the 0.3pt round-trip cost.
+
+So the gold entry signal is a weak coin-flip rather than NQ's negative one: consistent with the
+gold baseline's ~1pp-of-win-rate claimed edge, and with the repeated finding that this edge is
+smaller than any nuisance parameter's P&L spread. It does not change the live bot's status (paper
+only, untouched this run), and it is one more reason the data problem, not the exit logic, is the
+binding constraint.
