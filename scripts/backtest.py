@@ -20,16 +20,24 @@ def load_data(path="data/gold_5m.csv"):
 def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
                   contract="MGC", contracts=1, cost_pts=0.3, start_cap=50000,
                   regime_ma=None, session_hours=None, atr_period=None, atr_min_pts=None,
-                  confirm_bars=1, trail_mode="fixed", breakeven_r=1.0):
+                  confirm_bars=1, trail_mode="fixed", breakeven_r=1.0,
+                  stop_mode="fixed", atr_stop_mult=None, atr_series=None):
     """
     regime_ma: if set (e.g. 100), only take longs when close > SMA(regime_ma), shorts when close < it
     session_hours: if set, tuple (start_hour, end_hour) in the df's tz - only trade entries inside this window
     atr_period/atr_min_pts: if set, skip entries when ATR(atr_period) < atr_min_pts (too quiet/choppy)
+      (atr_period alone just computes ATR; the filter only applies when atr_min_pts is also set)
+    stop_mode: "fixed" (stop_pts points) or "atr" (stop = atr_stop_mult * ATR(atr_period) measured at
+      the entry bar, target = rr * that distance). ATR mode sizes risk to current volatility instead
+      of a constant point distance; requires atr_period and atr_stop_mult.
     confirm_bars: require this many consecutive closes past sma before entry (1 = original behavior)
     trail_mode: "fixed" (original: fixed stop + fixed tp) or "ma_trail" (move stop to breakeven at
       breakeven_r * stop_pts favorable move, then trail stop behind the MA itself, no fixed tp - exit
       only when price genuinely trails back through the MA)
     """
+    if stop_mode == "atr" and not (atr_period and atr_stop_mult):
+        raise ValueError("stop_mode='atr' requires atr_period and atr_stop_mult")
+
     df = df.copy()
     df["sma"] = df["close"].rolling(ma_period).mean()
     if regime_ma:
@@ -41,6 +49,10 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
             (df["low"] - df["close"].shift()).abs(),
         ], axis=1).max(axis=1)
         df["atr"] = tr.rolling(atr_period).mean()
+    if atr_series is not None:
+        # control hook: inject an ATR series (e.g. a time-shifted copy) so stop widths keep the same
+        # distribution but are decoupled from the volatility actually present at the entry bar
+        df["atr"] = atr_series.reindex(df.index)
     dropcols = ["sma"] + (["regime_sma"] if regime_ma else []) + (["atr"] if atr_period else [])
     df = df.dropna(subset=dropcols)
 
@@ -88,24 +100,24 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
                     pnl = (stop_price - entry_price) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
                     reason = "trail_stop" if (trail_mode == "ma_trail" and breakeven_hit) else "stop"
-                    trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "long", "reason": reason, "pnl": pnl})
+                    trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "long", "reason": reason, "pnl": pnl, "stop_dist": risk_pts})
                     position = 0
                 elif trail_mode == "fixed" and h >= tp_price:
                     pnl = (tp_price - entry_price) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
-                    trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "long", "reason": "tp", "pnl": pnl})
+                    trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "long", "reason": "tp", "pnl": pnl, "stop_dist": risk_pts})
                     position = 0
             elif position == -1:
                 if h >= stop_price:
                     pnl = (entry_price - stop_price) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
                     reason = "trail_stop" if (trail_mode == "ma_trail" and breakeven_hit) else "stop"
-                    trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "short", "reason": reason, "pnl": pnl})
+                    trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "short", "reason": reason, "pnl": pnl, "stop_dist": risk_pts})
                     position = 0
                 elif trail_mode == "fixed" and l <= tp_price:
                     pnl = (entry_price - tp_price) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
-                    trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "short", "reason": "tp", "pnl": pnl})
+                    trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "short", "reason": "tp", "pnl": pnl, "stop_dist": risk_pts})
                     position = 0
 
         # confirm_bars: track a pending cross and require it to hold for N consecutive bars
@@ -147,25 +159,34 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
                 in_session = (start_m <= now_min < end_m) if start_m < end_m else (now_min >= start_m or now_min < end_m)
                 if not in_session:
                     crossed_up = crossed_dn = False
-            if (crossed_up or crossed_dn) and atr_period and row["atr"] < atr_min_pts:
+            if (crossed_up or crossed_dn) and atr_period and atr_min_pts is not None \
+                    and row["atr"] < atr_min_pts:
                 crossed_up = crossed_dn = False
+
+            if crossed_up or crossed_dn:
+                # risk distance for THIS trade: constant, or scaled to volatility at the entry bar
+                if stop_mode == "atr":
+                    this_stop = atr_stop_mult * row["atr"]
+                    this_tp = this_stop * rr
+                else:
+                    this_stop, this_tp = stop_pts, tp_pts
 
             if crossed_up:
                 position = 1
                 entry_price = c
                 entry_ts = ts
-                stop_price = c - stop_pts
-                tp_price = c + tp_pts
-                risk_pts = stop_pts
+                stop_price = c - this_stop
+                tp_price = c + this_tp
+                risk_pts = this_stop
                 breakeven_hit = False
                 trades.append({"entry_ts": ts, "side": "long", "entry_price": c})
             elif crossed_dn:
                 position = -1
                 entry_price = c
                 entry_ts = ts
-                stop_price = c + stop_pts
-                tp_price = c - tp_pts
-                risk_pts = stop_pts
+                stop_price = c + this_stop
+                tp_price = c - this_tp
+                risk_pts = this_stop
                 breakeven_hit = False
                 trades.append({"entry_ts": ts, "side": "short", "entry_price": c})
 

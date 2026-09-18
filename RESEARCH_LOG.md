@@ -179,3 +179,166 @@ has a ~34% chance of happening by coin-flip, so none of the "4/6" rows above are
 their own either - the rotation control is the load-bearing evidence, not the window counts. Payoff
 is $157 win / -$83 loss, so breakeven win rate is **34.6%** against a measured ~35.5% - the entire
 claimed edge is ~1 percentage point of win rate, well inside the noise of this sample.
+
+## Volatility-normalized stops: is the fixed 8pt stop the broken part? (2026-09-18, run 2)
+
+**Why this and not another filter.** Every idea tested here so far (session, regime, confirm_bars)
+has the same shape: throw entries away -> fewer trades -> less variance -> looks like an edge. The
+rotation control killed the session filter for exactly that reason. This run deliberately picks a
+hypothesis of a *different* shape: keep every entry, change only the risk geometry, so the
+trade-count-reduction confound cannot produce the result.
+
+**Hypothesis (single, falsifiable):** the 8-point stop is a constant point distance applied to an
+instrument whose 5-min volatility varies widely over the sample. Sizing risk to volatility instead
+(stop = k * ATR(14) at the entry bar, target = rr * that) gives a stable improvement across multiple
+independent windows, **and** that improvement comes from adapting to volatility rather than from the
+average stop merely being wider.
+
+New code: `stop_mode="atr"` / `atr_stop_mult` / `atr_series` in `backtest.py` (regression-tested
+against the pre-change engine on 4 configs - identical trade counts and P&L, so the refactor is
+behavior-preserving for every existing result), and `scripts/wf_atr_stop.py`.
+Data: refreshed yfinance GC=F 5min, 13,700 bars, 2026-07-09 -> 2026-09-17 23:25 ET. 6 non-overlapping
+windows, fixed configs, no per-window refitting. ATR(14) over the sample: median **4.33 pts**, 10th
+pct 2.80, 90th pct 7.48, max 26.08 - so the live 8pt stop is ~1.85x median ATR.
+
+### Premise check (done first, on purpose)
+Does volatility at entry predict anything at all under the current fixed stop? Baseline trades
+bucketed into ATR quintiles at entry:
+
+| ATR quintile at entry | n | win rate | total P&L |
+|---|---|---|---|
+| Q1 (1.9-3.6 pts) | 100 | 31.0% | -$860 |
+| Q2 (3.7-4.5) | 99 | 39.4% | +$1,143 |
+| Q3 (4.5-5.7) | 99 | 39.4% | +$1,143 |
+| Q4 (5.7-7.4) | 99 | 32.3% | -$537 |
+| Q5 (7.4-23.2) | 100 | 36.0% | +$340 |
+
+Non-monotone, and **corr(ATR at entry, trade P&L) = 0.011**. Volatility at entry carries essentially
+no information about outcome in this sample. That already makes H unlikely; reported before the
+result rather than after it.
+
+### P1 - main test, 6 independent windows
+| Config | trades | profitable windows | total P&L | median window Sharpe | win rate |
+|---|---|---|---|---|---|
+| **FIXED 8pt (baseline / live config)** | 491 | 3/6 | **+$1,487** | -0.12 | 36% |
+| ATR k=0.5 (~2.1pt) | 1492 | 0/6 | -$4,877 | -4.80 | 33% |
+| ATR k=0.75 (~3.3pt) | 1207 | 1/6 | -$2,496 | -3.44 | 35% |
+| ATR k=1.0 (~4.5pt) | 894 | 2/6 | -$49 | -1.49 | 36% |
+| ATR k=1.25 (~5.5pt) | 682 | 2/6 | +$197 | -0.29 | 36% |
+| ATR k=1.5 (~6.7pt) | 531 | 3/6 | -$2,940 | -1.05 | 33% |
+| ATR k=2.0 (~10.0pt) | 342 | 2/6 | -$4,337 | -3.85 | 31% |
+| ATR k=2.5 (~12.8pt) | 224 | 1/6 | -$3,785 | -3.19 | 30% |
+| ATR k=3.0 (~15.8pt) | 172 | 2/6 | -$7,291 | -0.93 | 27% |
+
+**Not one ATR multiple beats fixed-8.** Best is k=1.25 at +$197 on 2/6 windows vs +$1,487 on 3/6.
+P1 fails outright.
+
+### P2 control - matched width (does *adaptivity* add anything?)
+For each k, a fixed stop set at that k's median realized distance, same windows:
+
+| k | median stop | ATR-adaptive | fixed at same width | adaptivity advantage | windows ATR better |
+|---|---|---|---|---|---|
+| 0.5 | 2.1pt | -$4,877 | -$3,554 | **-$1,323** | 1/6 |
+| 0.75 | 3.3pt | -$2,496 | -$3,188 | +$692 | 4/6 |
+| 1.0 | 4.5pt | -$49 | -$433 | +$384 | 3/6 |
+| 1.25 | 5.5pt | +$197 | +$204 | -$7 | 2/6 |
+| 1.5 | 6.7pt | -$2,940 | -$81 | **-$2,860** | 3/6 |
+| 2.0 | 10.0pt | -$4,337 | -$2,424 | -$1,912 | 2/6 |
+| 2.5 | 12.8pt | -$3,785 | -$6,197 | +$2,412 | 3/6 |
+| 3.0 | 15.8pt | -$7,291 | -$4,906 | -$2,384 | 2/6 |
+
+Adaptivity wins in **3/8** k values; mean advantage **-$625**, median **-$665**. Sign-flipping,
+centred on zero. No adaptivity effect.
+
+### P3 control - decoupled volatility (direct analogue of the session rotation control)
+Re-ran each k with the ATR series circularly time-shifted by 2k/4k/6k/8k/10k bars, so stop widths
+keep an identical distribution but no longer match the volatility actually present at the entry bar.
+If real ATR carried information, real should beat its own shifted copies.
+
+| k | real ATR | shifted mean | shifted min..max | real beats shifted |
+|---|---|---|---|---|
+| 0.5 | -$4,877 | -$4,714 | -$5,210..-$4,357 | 2/5 |
+| 0.75 | -$2,496 | -$3,433 | -$6,100..-$1,989 | 4/5 |
+| 1.0 | -$49 | -$1,406 | -$4,795..+$1,266 | 3/5 |
+| 1.25 | +$197 | +$13 | -$1,645..+$1,439 | 3/5 |
+| 1.5 | -$2,940 | -$1,881 | -$3,648..-$835 | 1/5 |
+| 2.0 | -$4,337 | +$631 | -$1,606..+$4,534 | **0/5** |
+| 2.5 | -$3,785 | +$578 | -$1,704..+$2,666 | **0/5** |
+| 3.0 | -$7,291 | -$3,940 | -$5,398..+$197 | **0/5** |
+
+Real-ATR P&L sits inside the range of its own shifted controls in 5/8 cases, and for k>=2 the real
+series is **worse than all five** decoupled controls. Knowing the current volatility is worth nothing
+here - arbitrarily mismatched stop widths do as well or better.
+
+**Verdict: DISCARD volatility-normalized stops. Hypothesis falsified on all three predictions**
+(no improvement, no adaptivity effect vs matched width, no information vs decoupled controls), and
+the premise check said so in advance (corr 0.011).
+
+### P4/P5 - the genuinely uncomfortable finding: the stop width itself is noise
+Neutral fixed-width sweep, same 6 windows:
+
+| stop | trades | profitable windows | total P&L |
+|---|---|---|---|
+| 3pt | 1261 | 3/6 | -$2,913 |
+| 4pt | 1048 | 2/6 | -$1,384 |
+| 5pt | 826 | 3/6 | +$772 |
+| 6pt | 690 | 2/6 | +$630 |
+| **8pt (live)** | 491 | 3/6 | **+$1,487** |
+| 10pt | 376 | 2/6 | -$2,428 |
+| 12pt | 295 | 2/6 | -$4,245 |
+| 16pt | 209 | 2/6 | -$5,267 |
+| 20pt | 156 | 1/6 | -$2,268 |
+| 24pt | 117 | 2/6 | -$351 |
+
+Only **3/10** widths are profitable; spread **-$5,267..+$1,487**. The live 8pt ranks **1/10** - but
+that is a selection artifact, not evidence: `data/sweep_results.csv` shows stop was swept over
+{5, 8, 12} on this *same* 60-day sample and 8 won. Being the best value of a parameter that was
+chosen on this data is exactly what you would expect whether or not there is an edge.
+
+Finer grid around it (+/-1.5pt), same windows:
+
+| stop | 6.5 | 7.0 | 7.5 | **8.0** | 8.5 | 9.0 | 9.5 |
+|---|---|---|---|---|---|---|---|
+| total P&L | +$2,645 | -$915 | +$441 | **+$1,487** | +$724 | -$915 | -$2,079 |
+| profitable windows | 4/6 | 2/6 | 2/6 | 3/6 | 2/6 | 2/6 | 2/6 |
+
+**A 0.5-point change in the stop swings P&L by up to $3,560 and flips its sign repeatedly.** There is
+no plateau around 8pt - it is a knife edge in a $4,700-wide neighbourhood, on a config whose whole
+claimed edge is $1,487. This is the same diagnosis the session rotation control gave, now for a
+second, independent nuisance parameter: **the P&L surface across arbitrary parameter choices is
+several times wider than the entire claimed edge.**
+
+Cost sensitivity, same windows:
+
+| round-trip cost | stop 8pt | stop 5pt |
+|---|---|---|
+| 0.00 pt | +$2,960 (3/6) | +$3,250 (4/6) |
+| 0.15 pt | +$2,224 (3/6) | +$2,011 (3/6) |
+| 0.30 pt (assumed) | +$1,487 (3/6) | +$772 (3/6) |
+| 0.60 pt | +$14 (2/6) | -$1,706 (3/6) |
+
+**The entire measured result is consumed by doubling the cost assumption from 0.3 to 0.6 pts.** 0.3pt
+on MGC is $3 round-trip; that is a reasonable-to-optimistic estimate, not a conservative one. So the
+config P&L is robust to neither its stop width nor its cost assumption.
+
+### What this means / what not to do next
+- Vol-normalized stops: dead, with controls. Do not revisit without a genuinely different mechanism
+  (e.g. vol measured over a different horizon AND a reason to expect it to matter).
+- Two independent nuisance parameters (session hours, stop width) have now each been shown to produce
+  a P&L spread 3-4x larger than the strategy claimed edge on this sample. That is the central fact
+  about this dataset: **60 days of 5-min gold cannot distinguish this strategy edge from parameter
+  noise, and more parameter search on it will keep producing false positives.**
+- Concrete implication: further hypothesis testing on this 60-day yfinance sample has low expected
+  value regardless of how well controlled each test is. The binding constraint is data, not ideas.
+  The highest-value next step is the backlog item already noted in README - pull multi-year history
+  (Dukascopy spot XAUUSD as a fast proxy, IB for exact contract) so windows can be measured in
+  years rather than 10-day slices.
+- Live config untouched this run, per instruction: `paper_trade.py` was not modified.
+- Live paper state re-checked at start of run: unchanged from the previous entry (11 closed trades,
+  4W/7L, +$47, one short open from 2026-09-17 21:30 ET). Nothing new has closed since the
+  bar-coverage fix, so there is still zero trustworthy live data to reconcile against.
+
+### Standing caveats (unchanged)
+60-day yfinance sample; 6 windows of ~10 days; tens of trades per window. Payoff $157 win /-$83 loss
+=> breakeven win rate 34.6% vs measured ~36%. Everything above is directional evidence about *this
+sample*, and the main thing it establishes is how little this sample can establish.
