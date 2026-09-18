@@ -550,3 +550,178 @@ gold baseline's ~1pp-of-win-rate claimed edge, and with the repeated finding tha
 smaller than any nuisance parameter's P&L spread. It does not change the live bot's status (paper
 only, untouched this run), and it is one more reason the data problem, not the exit logic, is the
 binding constraint.
+
+## Entry-signal screen across FIVE signal families, gold + NQ (2026-09-18, run 4)
+
+**Why.** The previous run established that the SMA(20) cross has no forward edge over randomly timed
+entries on NQ, which explains why every exit-rule search (45-config gold sweep, session filters,
+ATR stops, 480-config breakeven+trail grid) failed: an exit rule can only redistribute a zero-sum
+pool and then pay costs out of it. The obvious next move is not another exit search on a different
+entry - it is to screen *several* candidate entries cheaply, exit-rule-free, and only then spend time
+on whichever (if any) survives. This run does that, and runs the screen on **gold for the first time
+across families** (only the MA cross had been screened there).
+
+New code: `scripts/entry_screen.py`. The screening machinery itself was **not** re-implemented - it
+was extracted from `nq_entry_edge.py` into a reusable `screen_signal(df, idx, sides, ...)` that takes
+any family's entry bars and sides, and `nq_entry_edge.py` now calls it too. Verified behavior-
+preserving: re-running `nq_entry_edge.py` reproduces the logged MA20 numbers exactly
+(-1.404 / -0.418 / -1.472 / -1.002 / -1.670 / -0.539). One column added, `t_wins1pct` (t after 1%
+winsorizing) so a mean carried by a handful of freak bars is visible as such.
+
+Data: unchanged 60-day yfinance samples, so results are directly comparable to the MA-cross screen
+above - gold GC=F 13,700 bars and NQ=F 13,663 bars, both 2026-07-09 -> 2026-09-17 ET. Race
+thresholds are now ATR-scaled (0.5/1/2/4 x median ATR14: gold 4.3pt, NQ 24.1pt) so the two
+instruments are compared like for like.
+
+### Families tested (12 configs, spanning both hypothesis shapes)
+| family | shape | mechanism |
+|---|---|---|
+| MA20 cross | continuation | incumbent, re-run as calibration |
+| Donchian 20 / 60-bar breakout | continuation | new n-bar extreme, reacts to range edge not to an average |
+| ROC 12-bar >1.5 sigma / 24-bar >2.0 sigma / 48-bar >1.5 sigma | continuation | n-bar return exceeds k rolling sigma |
+| z-score revert n=48 k=2.0 / n=96 k=2.5 | **reversion** | price k sigma from its own rolling mean -> fade |
+| Session VWAP deviation 2.0 sigma | **reversion** | fade stretch from the day's VWAP |
+| Volume spike 3x + directional body | continuation | participation-confirmed thrust |
+| Opening-range breakout 30 / 60 min (09:30 ET) | continuation | time-anchored, not rolling |
+
+The screen is **two-sided**: `sides` encodes each family's own hypothesis, so a strongly *negative*
+result for a continuation family is not "no edge", it is a positive result for fading that trigger.
+That distinction turns out to be the whole finding of this run.
+
+### GOLD: nothing, in any family. All 12 configs NO EDGE.
+Not one of 72 mean-move tests reached |t| >= 2 (chance alone would give ~3). Every family's mean
+forward move sits inside the random-entry control's 5-95 band at every horizon; the largest |mean| at
+h=24 is 2.9 pts (ROC24, t=-1.79) against a median ATR of 4.3 pts, and the MFE/MAE race edges run
+-9 to +10pp with no pattern. Best-looking row is ORB-60min (+1.77 pts at h24, 4/6 windows) on **51
+signals** - not evidence.
+
+| gold family | n | mean h3 | mean h24 | mean h96 | best abs t | above p95 | below p5 | pos windows | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| MA20 cross | 1641 | 0.02 | 0.24 | 0.03 | 0.52 | 0 | 0 | 5/6 | NO EDGE |
+| Donchian 20 | 1066 | -0.14 | -0.57 | -0.33 | 1.00 | 0 | 0 | 3/6 | NO EDGE |
+| Donchian 60 | 540 | -0.07 | 0.81 | 0.24 | 0.98 | 0 | 0 | 3/6 | NO EDGE |
+| ROC 12 k1.5 | 436 | -0.09 | -0.26 | -0.51 | 0.76 | 0 | 0 | 2/6 | NO EDGE |
+| ROC 24 k2.0 | 159 | -0.81 | -2.91 | -0.41 | 1.79 | 0 | 1 | 2/6 | NO EDGE |
+| ROC 48 k1.5 | 261 | 0.42 | 0.86 | 1.46 | 1.23 | 0 | 0 | 4/6 | NO EDGE |
+| revert z48 k2.0 | 596 | 0.08 | 0.05 | 0.92 | 0.57 | 0 | 0 | 3/6 | NO EDGE |
+| revert z96 k2.5 | 232 | 0.61 | -1.32 | -0.88 | 1.55 | 0 | 1 | 2/6 | NO EDGE |
+| VWAP dev 2.0 | 681 | 0.10 | -0.54 | -0.79 | 1.13 | 0 | 0 | 3/6 | NO EDGE |
+| Volume spike 3x | 891 | -0.30 | 0.12 | 0.66 | 0.93 | 0 | 0 | 3/6 | NO EDGE |
+| ORB 30min | 67 | -1.21 | -0.39 | 2.08 | 1.23 | 0 | 0 | 2/6 | NO EDGE |
+| ORB 60min | 51 | -0.31 | 1.77 | 3.85 | 0.91 | 0 | 0 | 4/6 | NO EDGE |
+
+**Gold verdict: no entry family screened here has forward edge on this sample.** The live bot's MA
+cross is not uniquely bad - gold 5-min simply shows no exploitable timing structure in 60 days,
+whether you ask it to trend or to revert. Consistent with the standing conclusion that the binding
+constraint on the gold work is data, not ideas.
+
+### NQ: eleven of twelve configs NO EDGE - and one clear, robust exception, in the *fade* direction
+| nq family | n | mean h24 (pts) | best abs t | above p95 | below p5 | pos windows | verdict |
+|---|---|---|---|---|---|---|---|
+| MA20 cross | 1713 | -1.00 | 1.61 | 0 | 1 | 1/6 | NO EDGE |
+| Donchian 20 | 1118 | -3.46 | 1.47 | 0 | 0 | 2/6 | NO EDGE |
+| Donchian 60 | 621 | -5.34 | 1.93 | 0 | 1 | 2/6 | NO EDGE |
+| ROC 12 k1.5 | 385 | -11.38 | 1.90 | 0 | 1 | 1/6 | NO EDGE |
+| ROC 24 k2.0 | 175 | -27.22 | 2.68 | 0 | 3 | 2/6 | NO EDGE (supports the one below) |
+| **ROC 48 k1.5** | **291** | **-22.88** | **3.32** | **0** | **5** | **0/6** | **REVERSED - worth a follow-up** |
+| revert z48 k2.0 | 548 | 3.36 | 0.92 | 0 | 0 | 5/6 | NO EDGE |
+| revert z96 k2.5 | 229 | 12.61 | 1.94 | 5 | 0 | 3/6 | NO EDGE (suggestive, fails windows) |
+| VWAP dev 2.0 | 698 | 2.99 | 2.89 | 1 | 0 | 3/6 | NO EDGE (h96 only) |
+| Volume spike 3x | 1058 | -6.46 | 1.48 | 0 | 2 | 1/6 | NO EDGE |
+| ORB 30min | 60 | -20.23 | 1.65 | 0 | 2 | 3/6 | NO EDGE (n=60) |
+| ORB 60min | 49 | -15.57 | 1.89 | 0 | 2 | 3/6 | NO EDGE (n=49) |
+
+Note the column of negative h24 means for *continuation* families: breakouts, thrusts, volume spikes
+and opening-range breaks on NQ 5-min all drift the wrong way, and the two reversion families drift
+the right way. That is one coherent story, not twelve independent results.
+
+#### PROMISING: fade a 4-hour thrust on NQ ("ROC n=48 k=1.5 sigma", traded in reverse)
+Trigger: the 48-bar (4h) return exceeds 1.5 rolling sigma. The hypothesis as coded was continuation;
+the measured move is the opposite, so **the tradeable version is to fade it**. 291 signals, 46%
+up-thrusts.
+
+| horizon | n | mean (pts) | median | t | t (1% wins) | ctrl p5 | ctrl p95 | pctile vs ctrl |
+|---|---|---|---|---|---|---|---|---|
+| 3 (15m) | 291 | -5.06 | -3.50 | -1.82 | -2.22 | -3.24 | 3.60 | 0.005 |
+| 6 (30m) | 291 | -10.21 | -5.00 | -2.50 | -2.46 | -4.64 | 5.16 | 0.000 |
+| 12 (1h) | 291 | -14.92 | -6.75 | -2.50 | -2.68 | -6.32 | 7.96 | 0.000 |
+| **24 (2h)** | 291 | **-22.88** | -14.25 | **-3.32** | **-3.54** | -11.70 | 10.50 | **0.000** |
+| 48 (4h) | 291 | -18.08 | -11.75 | -2.18 | -2.29 | -13.01 | 11.88 | 0.010 |
+| 96 (8h) | 291 | 0.64 | -3.00 | 0.06 | 0.03 | -17.50 | 17.71 | 0.485 |
+
+MFE/MAE race (reported as coded, so the fade gets the complement): 38.5% / 42.6% / 45.4% at
+0.5/1/2 ATR vs control 44.3% / 47.8% / 50.9% - i.e. **+5.2 to +5.8pp for the fade at every
+threshold**, unlike the non-monotone noise seen in every previous screen.
+
+Controls run on it, all of which it passes:
+- **Per-window sign: 6/6 windows negative** (-4.7, -11.4, -12.1, -13.9, -21.7, -75.4 pts). The only
+  result in this repo's history to be sign-consistent across all six independent windows.
+- **Leave-one-window-out:** t stays between -2.29 and -3.33 for all six exclusions. Dropping the
+  strongest window (#2) still leaves mean -13.3 pts, t -2.29. Not two good weeks.
+- **Both sides:** up-thrusts fade -9.5 pts and down-thrusts fade -34.3 pts at h24 (at h12: -15.6 and
+  -14.4). Present on both sides, so it is not the sample's +252pt net drift in disguise.
+- **Direction-shuffle control** (same signal timestamps, random sides - kills any direction-specific
+  effect while keeping the timing): real sits at percentile 0.00-0.01 of 300 shuffles for every
+  strong config. So it is the *direction* of the thrust that carries it, not merely the timing.
+- **Parameter neighbourhood** (`--scan`, 22 configs x 3 horizons, `data/entry_scan_nq_h*.csv`):
+  8 of 9 ROC configs are negative at h24; n=24 k=2.0 (-27.2, t -2.68), n=24 k=2.5 (-36.9, t -2.45)
+  and n=48 k=2.0 (-27.9, t -2.20) agree in sign and magnitude. **No knife edge** - the exact opposite
+  of the gold 8pt stop and the NQ trail grid winner, whose neighbours all died.
+- **Not a thin-bar artifact:** median volume at signal bars is 1,841 vs 751 for the sample (2.5x),
+  only 2 of 291 signals sit on a zero-volume bar, 45% fire in 09:30-16:00 ET, and the effect is
+  *stronger* in RTH (-26.6 pts) than overnight (-19.8) at h24.
+- **Decay shape is coherent:** the effect builds to 2h and is gone by 8h (h96 mean +0.6, percentile
+  0.49). A data glitch would not decay like that.
+
+Honest counter-evidence, stated up front:
+- **Overlapping forward windows inflate the t-stats.** Signals cluster, so the observations are not
+  independent, and the random-entry control draws independently (so its band is too narrow too).
+  Re-running with a cooldown so forward windows never overlap: at h=24, n falls 291 -> 146 and
+  t goes **-3.32 -> -1.43** (mean -22.9 -> -13.9, still at percentile 0.06 of the control). For
+  ROC n=24 k=2.0 at h24: t -2.68 -> -1.81, mean -26.5, percentile 0.01. So the *sign* and the
+  position outside the control band survive de-overlapping; **the headline |t| roughly halves and the
+  honest effect size is more like 14 pts than 23.**
+- **Multiple comparisons:** 72 mean-move tests per instrument in the main screen plus 66 in the scan.
+  ~3 tests with |t|>=2 per instrument are expected by chance. The defence is not the single t-stat, it
+  is the coherence (neighbouring params, three horizons, both sides, 6/6 windows, two controls) - but
+  it is still one sample, and this run went looking across eleven families.
+- **Window 2 is 3x any other window** (-75 pts vs -5..-22). All six agree in sign, but the magnitude
+  is concentrated.
+- **Same 60-day yfinance sample, continuous NQ=F, 291 signals.** Everything this repo has learned
+  about that sample applies here too.
+- **It is a fade.** Mean-reversion entries have an adverse tail (fading a thrust that keeps going is
+  how accounts die), and a mean-forward-move screen says nothing about the path. The MFE/MAE race is
+  supportive (+5pp at every threshold), and that is the only path evidence here.
+
+Scale for context, not as a P&L claim: -22.9 pts at h24 is ~$46 per trade on MNQ against a 1.0pt
+($2) assumed round-trip cost; even the de-overlapped -13.9 pts is ~$28. Unlike every prior candidate
+in this log, the effect is large relative to cost rather than a fraction of it.
+
+#### The two reversion families that did NOT make the cut (logged so nobody re-runs them)
+- `revert z96 k2.5`: 5 of 6 horizons **above** the control p95 (means +6.4 to +26.3 pts) - superficially
+  the strongest reversion signal here - but best |t| is 1.94 and only 3/6 windows are positive. Fails
+  the window-consistency bar that ROC48 passes. Suggestive, not flagged.
+- `VWAP deviation 2.0 sigma`: t = 2.89 (winsorized 3.09) but **only at h=96**, with h3..h48 all inside
+  the control band and 3/6 windows. An 8-hour-only effect with no build-up is the shape of noise.
+- `revert z48 k2.0`: 5/6 positive windows but means of +0.9..+5.3 pts with |t| < 1. Nothing.
+
+### Verdict
+- **Gold: NO EDGE in all 12 configs across 5 families.** Screened out. Do not build exit logic on any
+  of them. The gold live bot's situation is unchanged (and `paper_trade.py` was not touched this run).
+- **NQ: NO EDGE for MA cross, Donchian 20/60, volume-spike, ORB 30/60, z48, z96, VWAP.** Screened out.
+- **NQ: "fade a 4h thrust" (ROC n=48 k=1.5, traded opposite to the coded direction) is PROMISING and
+  worth a follow-up exit-rule search** - the first candidate in this repo to pass a random-entry
+  control, a direction-shuffle control, a parameter neighbourhood, leave-one-window-out and 6/6
+  window sign consistency. Per this run's scope, **no exit logic was built for it**, and none should
+  be until the caveats above are addressed.
+- Recommended order for the follow-up, before any grid: (1) re-screen it on a longer sample - this is
+  the same 60 days everything else died on, and a genuine reversion effect should be testable on
+  years of data; (2) use non-overlapping signals or a block bootstrap for any significance claim;
+  (3) only then search exits, and make the tail (adverse excursion, worst trade, drawdown), not the
+  mean, the acceptance criterion - it is a fade.
+
+### Standing caveats
+60-day yfinance sample, 6 windows of ~10 calendar days, continuous front-month rather than a properly
+rolled contract, 49-1,713 signals depending on family. Signal clustering means effective sample sizes
+are smaller than the n columns suggest. This is a screen, not a strategy: no cost, slippage, position
+sizing, stop, target or drawdown is modelled anywhere in it.

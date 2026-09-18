@@ -78,57 +78,96 @@ def random_idx(n, lo, hi):
     return RNG.integers(lo, hi, size=n)
 
 
-def main():
-    pd.set_option("display.width", 220)
-    df = load_data(DATA)
+def winsor_t(v, p=0.01):
+    """t-stat after clipping the most extreme p tails, i.e. with outlier bars defanged.
+
+    A mean driven by a handful of huge moves is not a tradeable edge, it is a lottery ticket that
+    happened to be in the sample. If t and t_wins disagree badly, believe t_wins.
+    """
+    if len(v) < 20:
+        return np.nan
+    lo, hi = np.percentile(v, [100 * p, 100 * (1 - p)])
+    w = np.clip(v, lo, hi)
+    s = w.std()
+    return np.nan if s == 0 else w.mean() / (s / np.sqrt(len(w)))
+
+
+def screen_signal(df, idx, sides, label, horizons=HORIZONS, race_x=RACE_X,
+                  n_boot=N_BOOT, n_windows=N_WINDOWS, warmup=0, verbose=True):
+    """The exit-rule-free entry screen. Signal-family agnostic: hand it entry bar indices and sides.
+
+    idx    : integer positions of the entry bars (signal evaluated at that bar's close)
+    sides  : +1 long / -1 short, same length as idx, encoding the family's own hypothesis
+    warmup : first bar index the control is allowed to draw from (a family's lookback)
+
+    Returns (fwd_df, race_df, window_df). This is the machinery validated in the 2026-09-18 NQ run;
+    new signal families should reuse it rather than re-implementing the controls.
+    """
     close, high, low = df["close"].values, df["high"].values, df["low"].values
-    print(f"Data: {len(df)} bars {df.index[0]} -> {df.index[-1]}")
+    if verbose:
+        print(f"\n================ {label}: {len(idx)} signals "
+              f"({(sides == 1).mean() if len(idx) else float('nan'):.0%} long) ================")
+    if len(idx) < 20:
+        if verbose:
+            print("   too few signals to screen (<20) - skipped")
+        return None, None, None
 
-    for ma in MA_PERIODS:
-        idx, sides = signals(df, ma)
-        print(f"\n================ MA{ma} cross: {len(idx)} signals "
-              f"({(sides == 1).mean():.0%} long) ================")
-
-        rows = []
-        for h in HORIZONS:
-            real = fwd_moves(close, idx, sides, h)
-            boots = []
-            for _ in range(N_BOOT):
-                ridx = random_idx(len(idx), ma + 1, len(close) - max(HORIZONS) - 1)
-                boots.append(fwd_moves(close, ridx, sides, h).mean())
-            boots = np.array(boots)
-            pct = float((boots < real.mean()).mean())
-            rows.append(dict(horizon_bars=h, n=len(real), mean_move_pts=real.mean(),
-                             median_move_pts=np.median(real), t_stat=real.mean() / (real.std() / np.sqrt(len(real))),
-                             ctrl_mean=boots.mean(), ctrl_p5=np.percentile(boots, 5),
-                             ctrl_p95=np.percentile(boots, 95), pctile_vs_ctrl=pct))
-        fwd = pd.DataFrame(rows)
+    rows = []
+    for h in horizons:
+        real = fwd_moves(close, idx, sides, h)
+        boots = []
+        for _ in range(n_boot):
+            ridx = random_idx(len(idx), warmup + 1, len(close) - max(horizons) - 1)
+            boots.append(fwd_moves(close, ridx, sides, h).mean())
+        boots = np.array(boots)
+        pct = float((boots < real.mean()).mean())
+        rows.append(dict(horizon_bars=h, n=len(real), mean_move_pts=real.mean(),
+                         median_move_pts=np.median(real),
+                         t_stat=real.mean() / (real.std() / np.sqrt(len(real))),
+                         t_wins1pct=winsor_t(real),
+                         ctrl_mean=boots.mean(), ctrl_p5=np.percentile(boots, 5),
+                         ctrl_p95=np.percentile(boots, 95), pctile_vs_ctrl=pct))
+    fwd = pd.DataFrame(rows)
+    if verbose:
         print("\n-- A) signed forward move vs random-entry control (same side sequence) --")
         print(fwd.to_string(index=False, float_format=lambda x: f"{x:,.3f}"))
 
-        rrows = []
-        for x in RACE_X:
-            r = race(high, low, close, idx, sides, x)
-            ridx = random_idx(len(idx), ma + 1, len(close) - 97)
-            rc = race(high, low, close, ridx, sides, x)
-            rrows.append(dict(x_pts=x, decided=int(np.isfinite(r).sum()),
-                              win_rate=np.nanmean(r), ctrl_win_rate=np.nanmean(rc),
-                              edge_pp=100 * (np.nanmean(r) - np.nanmean(rc))))
+    rrows = []
+    for x in race_x:
+        r = race(high, low, close, idx, sides, x)
+        ridx = random_idx(len(idx), warmup + 1, len(close) - 97)
+        rc = race(high, low, close, ridx, sides, x)
+        rrows.append(dict(x_pts=x, decided=int(np.isfinite(r).sum()),
+                          win_rate=np.nanmean(r), ctrl_win_rate=np.nanmean(rc),
+                          edge_pp=100 * (np.nanmean(r) - np.nanmean(rc))))
+    races = pd.DataFrame(rrows)
+    if verbose:
         print("\n-- B) MFE/MAE race: reaches +x before -x within 96 bars --")
-        print(pd.DataFrame(rrows).to_string(index=False, float_format=lambda x: f"{x:,.3f}"))
+        print(races.to_string(index=False, float_format=lambda x: f"{x:,.3f}"))
 
-        # per-window sign consistency at the mid horizon
-        h = 24
-        bounds = np.linspace(0, len(df), N_WINDOWS + 1).astype(int)
-        wr = []
-        for i in range(N_WINDOWS):
-            m = (idx >= bounds[i]) & (idx < bounds[i + 1])
-            v = fwd_moves(close, idx[m], sides[m], h)
-            wr.append(dict(window=i + 1, n=len(v), mean_move_pts=v.mean() if len(v) else np.nan))
-        w = pd.DataFrame(wr)
+    # per-window sign consistency at the mid horizon
+    h = 24
+    bounds = np.linspace(0, len(df), n_windows + 1).astype(int)
+    wr = []
+    for i in range(n_windows):
+        m = (idx >= bounds[i]) & (idx < bounds[i + 1])
+        v = fwd_moves(close, idx[m], sides[m], h)
+        wr.append(dict(window=i + 1, n=len(v), mean_move_pts=v.mean() if len(v) else np.nan))
+    w = pd.DataFrame(wr)
+    if verbose:
         print(f"\n-- per-window mean signed move at h={h} bars (2h) --")
         print(w.to_string(index=False, float_format=lambda x: f"{x:,.3f}"))
-        print(f"   windows with positive mean move: {(w.mean_move_pts > 0).sum()}/{N_WINDOWS}")
+        print(f"   windows with positive mean move: {(w.mean_move_pts > 0).sum()}/{n_windows}")
+    return fwd, races, w
+
+
+def main():
+    pd.set_option("display.width", 220)
+    df = load_data(DATA)
+    print(f"Data: {len(df)} bars {df.index[0]} -> {df.index[-1]}")
+    for ma in MA_PERIODS:
+        idx, sides = signals(df, ma)
+        screen_signal(df, idx, sides, f"MA{ma} cross", warmup=ma)
 
 
 if __name__ == "__main__":
