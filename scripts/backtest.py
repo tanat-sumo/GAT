@@ -8,6 +8,25 @@ import numpy as np
 CONTRACT_MULT = {"MGC": 10, "GC": 100, "NQ": 20, "MNQ": 2}  # $ per point per contract
 
 
+def _mins_of_day(x):
+    """Accept an hour (int/float) or an (hour, minute) tuple; return minutes since midnight."""
+    return x * 60 if isinstance(x, (int, float)) else x[0] * 60 + x[1]
+
+
+def _crossed_time(prev_min, now_min, target_min):
+    """True if the clock time `target_min` falls in (prev_min, now_min], wrapping at midnight.
+
+    Edge-triggered on purpose: the forced session exit must fire once, on the first bar at or after
+    the cutoff, not on every bar for the rest of the day (which would silently double as an entry
+    filter and would break for session windows that wrap midnight).
+    """
+    if prev_min is None:
+        return False
+    if prev_min <= now_min:
+        return prev_min < target_min <= now_min
+    return target_min > prev_min or target_min <= now_min
+
+
 def load_data(path="data/gold_5m.csv"):
     # NOTE: previously passed skiprows=[1, 2] (left over from raw 3-row yfinance MultiIndex
     # headers). Both saved CSVs have a single header row, so that silently discarded the first
@@ -23,7 +42,7 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
                   confirm_bars=1, trail_mode="fixed", breakeven_r=1.0,
                   stop_mode="fixed", atr_stop_mult=None, atr_series=None,
                   trail_buffer_pts=0.0, trail_buffer_atr=None, trail_ma_period=None,
-                  trail_timing="next_bar"):
+                  trail_timing="next_bar", flat_by=None):
     """
     regime_ma: if set (e.g. 100), only take longs when close > SMA(regime_ma), shorts when close < it
     session_hours: if set, tuple (start_hour, end_hour) in the df's tz - only trade entries inside this window
@@ -50,6 +69,12 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
       "close" is the original behavior - update from this bar's close, then test that same bar's
       high/low - kept only to reproduce pre-2026-09-18 runs; it peeks and should not be used for
       new results.
+    flat_by: if set (hour or (hour, minute), in the df's tz), force-close any open position at the
+      close of the first bar at or after that time of day, and do not open a new one on that bar.
+      Stop/TP are still checked first on that bar, so a level that was already hit wins. This makes
+      "be flat by <time>" an actual exit rule rather than just an entry filter - session_hours only
+      ever gated entries, so a trade opened inside the window could previously run for days.
+      None = original behavior (no time-based exit).
 
     NOTE 2026-09-18: two fill bugs were fixed here, both of which made every pre-fix ma_trail number
     optimistic (see RESEARCH_LOG). (1) The MA trail could set a long's stop ABOVE the market (or a
@@ -106,6 +131,7 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
     prev_sma = None
     pending_side = None  # confirm_bars tracking: side awaiting confirmation since the raw cross
     pending_count = 0
+    prev_min_of_day = None  # for the edge-triggered flat_by cutoff
 
     trail_col = "trail_sma" if trail_ma_period else "sma"
 
@@ -181,6 +207,23 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
                     trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "short", "reason": "tp", "pnl": pnl, "stop_dist": risk_pts})
                     position = 0
 
+        # "be flat by <time>": time-based exit at this bar's close, checked AFTER stop/tp so an
+        # already-touched level wins. Blocks a new entry on the same bar (you are going flat, not
+        # re-entering one bar before the cutoff).
+        flat_bar = False
+        if flat_by is not None:
+            now_min = ts.hour * 60 + ts.minute
+            if _crossed_time(prev_min_of_day, now_min, _mins_of_day(flat_by)):
+                flat_bar = True
+                if position != 0:
+                    sgn = 1 if position == 1 else -1
+                    pnl = (c - entry_price) * sgn * mult * contracts - cost_pts * mult * contracts
+                    equity += pnl
+                    trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price,
+                                   "side": "long" if position == 1 else "short",
+                                   "reason": "session_flat", "pnl": pnl, "stop_dist": risk_pts})
+                    position = 0
+
         # confirm_bars: track a pending cross and require it to hold for N consecutive bars
         crossed_up = crossed_dn = False
         if prev_close is not None:
@@ -205,7 +248,7 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
                 pending_side, pending_count = None, 0
 
         # signal: cross and close past sma, optionally confirmed + filtered
-        if prev_close is not None and position == 0:
+        if prev_close is not None and position == 0 and not flat_bar:
 
             if crossed_up and regime_ma and c <= row["regime_sma"]:
                 crossed_up = False
@@ -257,6 +300,7 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
             _trail_update(row, c)
 
         prev_close, prev_sma = c, row["sma"]
+        prev_min_of_day = ts.hour * 60 + ts.minute
         equity_curve.append({"ts": ts, "equity": equity})
 
     eq_df = pd.DataFrame(equity_curve).set_index("ts")

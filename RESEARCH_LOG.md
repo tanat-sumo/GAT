@@ -725,3 +725,215 @@ in this log, the effect is large relative to cost rather than a fraction of it.
 rolled contract, 49-1,713 signals depending on family. Signal clustering means effective sample sizes
 are smaller than the n columns suggest. This is a screen, not a strategy: no cost, slippage, position
 sizing, stop, target or drawdown is modelled anywhere in it.
+
+## The Reddit trader's actual session window: pre-market -> flat by noon (2026-09-18, run 5)
+
+**Why this and not the window already falsified.** The 2026-09-18 session work falsified
+**09:30-16:00 ET** (full NY RTH) on gold. A real NQ/MNQ trader running the same MA-cross-on-5min
+setup described a *different* filter in their own words on r/algotrading ("My bot took the first loss
+today..."):
+
+> "5 minute timeframe NY session, pre market and a bit after opening bell. NEVER 24/7!!!!
+>  ... I try to be done and flat by 12pm EST."
+
+That is earlier and narrower than what was tested, and it carries an **exit** rule ("flat by 12pm")
+that a pure entry filter does not capture. Untested here, and the user asked for it specifically, so
+it gets the same rigor the 09:30-16:00 window got - **6 independent windows plus the 24-hour rotation
+control**, not one train/test split.
+
+**Stated in advance, because it sets the prior:** `scripts/nq_entry_edge.py` found the MA cross entry
+has **no forward edge versus randomly timed entries on NQ** at any horizon from 15 minutes to 8 hours,
+and `scripts/entry_screen.py` found the same on gold across five signal families. A session filter
+cannot manufacture edge in an entry that has none in aggregate - it can only cut trade count, which
+cuts variance and lets in-sample luck about *which* trades got dropped read as improvement. This run
+was therefore expected to fail, and is logged as a properly-controlled confirmation rather than a
+search for a win.
+
+### Engine change: "flat by 12pm" is an exit rule, so the engine needed one
+`session_hours` only ever gated **entries** - a trade opened at 11:55 could run for days, which is
+not what "done and flat by 12pm" means. Added opt-in `flat_by=(h, m)` to `backtest.py`: force-close
+any open position at the close of the first bar at or after that clock time, and block a new entry on
+that bar. Stop/TP are still checked first on that bar, so an already-touched level wins. The cutoff is
+**edge-triggered** (fires once on the crossing bar, not on every bar after it), so it does not
+silently double as a second entry filter and does not break for windows that wrap midnight - which
+matters because the rotation control below rotates the cutoff with the window.
+
+Regression-tested against the pre-change engine on 5 configs spanning fixed stops, session filter,
+regime+confirm, ATR stops and the ma_trail path: **identical trade counts and P&L to the cent** with
+`flat_by` unset. Every prior result in this log stands. `scripts/paper_trade.py` untouched.
+
+New code: `scripts/wf_reddit_session.py` (candidates + rotation control + neighbourhood),
+`scripts/wf_reddit_session_bootstrap.py` (trade-count-matched control).
+
+### Method
+"Pre-market and a bit after the opening bell" is not a clock time, so **five** plausible readings were
+tested rather than one guess, all ending at the stated 12:00 ET cutoff: **04:00, 06:00, 07:00, 08:00
+and 09:30 -> 12:00 ET** (8.0h / 6.0h / 5.0h / 4.0h / 2.5h). Each was run in **two modes** - entry
+filter only, and entry filter **+ forced flat at 12:00** - giving 10 configs per instrument.
+
+Both instruments: **gold** (GC=F, MGC sizing, ma20/stop8/rr2, 0.3pt cost - the live paper bot's
+config) and **NQ** (NQ=F, MNQ sizing, ma20/stop25/rr2, 1.0pt cost - the instrument the filter's
+real-world source actually trades). Data refetched the same day: gold 13,473 bars and NQ 13,432 bars,
+2026-07-10 -> 2026-09-18 03:30 ET. 6 sequential non-overlapping windows, fixed configs, no
+per-window refitting.
+
+Reference baselines over those 6 windows: **gold 24/7 = +$822, 3/6 windows, 485 trades**;
+**NQ 24/7 = -$5,716, 1/6 windows, 1,006 trades.**
+
+### P1 - the candidate windows
+| window | instrument | entry-only P&L | +flat@12:00 P&L | trades | prof windows (flat mode) |
+|---|---|---|---|---|---|
+| 04:00-12:00 ET | gold | +$395 | +$336 | 215 | 2/6 |
+| 06:00-12:00 ET | gold | +$725 | +$666 | 185 | 4/6 |
+| **07:00-12:00 ET** | gold | **+$936** | +$877 | 168 | 4/6 |
+| 08:00-12:00 ET | gold | +$907 | +$848 | 151 | 4/6 |
+| 09:30-12:00 ET | gold | **-$149** | -$228 | 103 | 4/6 |
+| 04:00-12:00 ET | NQ | -$3,136 | -$2,880 | 418 | 1/6 |
+| 06:00-12:00 ET | NQ | -$3,442 | -$3,186 | 346 | 1/6 |
+| 07:00-12:00 ET | NQ | -$2,690 | -$2,434 | 320 | **0/6** |
+| 08:00-12:00 ET | NQ | -$2,588 | -$2,332 | 269 | **0/6** |
+| 09:30-12:00 ET | NQ | -$2,692 | -$2,436 | 196 | **0/6** |
+
+On gold the mid-range windows beat the 24/7 baseline's +$822 on ~1/3 the trades, which is exactly the
+shape that has fooled this repo twice before. **On NQ every single candidate loses money in every mode,
+and three of five lose in all six windows.** Forcing flat at noon helps NQ slightly (it cuts the
+overnight hold) and hurts gold slightly; in neither case does it change any sign.
+
+### P2 CONTROL (load-bearing) - the same window WIDTH at all 24 start hours
+For each candidate width, an identically-wide window was rotated through all 24 whole-hour starts
+(keeping the :30 offset for the 09:30 candidate, and moving the forced-flat cutoff with the window so
+each rotation is the same rule at a different time of day). Rank 1 = best of 24.
+
+| window | instrument | mode | rank by total P&L | rank by $/trade | rotations positive | rotation spread |
+|---|---|---|---|---|---|---|
+| 04:00-12:00 (8.0h) | gold | entry-only | 13/24 | 14/24 | 15/24 | $3,450 |
+| 06:00-12:00 (6.0h) | gold | entry-only | 8/24 | 10/24 | 13/24 | $3,165 |
+| 07:00-12:00 (5.0h) | gold | entry-only | **5/24** | 8/24 | 15/24 | $3,333 |
+| 08:00-12:00 (4.0h) | gold | entry-only | 6/24 | 9/24 | 14/24 | $2,981 |
+| 09:30-12:00 (2.5h) | gold | entry-only | 15/24 | 14/24 | 11/24 | $2,933 |
+| 04:00-12:00 | gold | +flat | 13/24 | 16/24 | 16/24 | $3,721 |
+| 06:00-12:00 | gold | +flat | 9/24 | 10/24 | 15/24 | $3,484 |
+| 07:00-12:00 | gold | +flat | 7/24 | 9/24 | 14/24 | $2,648 |
+| 08:00-12:00 | gold | +flat | **5/24** | 7/24 | 15/24 | $3,468 |
+| 09:30-12:00 | gold | +flat | 19/24 | 18/24 | 13/24 | $1,878 |
+| 04:00-12:00 | NQ | entry-only | 21/24 | 16/24 | 0/24 | $3,831 |
+| 06:00-12:00 | NQ | entry-only | **24/24** | 22/24 | 1/24 | $3,627 |
+| 07:00-12:00 | NQ | entry-only | 22/24 | 19/24 | 2/24 | $3,844 |
+| 08:00-12:00 | NQ | entry-only | 22/24 | 20/24 | 2/24 | $3,105 |
+| 09:30-12:00 | NQ | entry-only | **24/24** | **24/24** | 4/24 | $3,576 |
+| 04:00-12:00 | NQ | +flat | 20/24 | 15/24 | 1/24 | $3,510 |
+| 06:00-12:00 | NQ | +flat | **24/24** | 21/24 | 2/24 | $3,439 |
+| 07:00-12:00 | NQ | +flat | 22/24 | 16/24 | 4/24 | $3,804 |
+| 08:00-12:00 | NQ | +flat | 23/24 | 18/24 | 5/24 | $3,004 |
+| 09:30-12:00 | NQ | +flat | **24/24** | 23/24 | 5/24 | $3,182 |
+
+**Gold: 5th-19th of 24. Mid-pack, exactly like the 09:30-16:00 window's 9th of 24.** Best case is
+rank 5, and 14-16 of 24 arbitrary rotations are also positive, so "this window makes money" carries
+no information. The rotation spread is **$2,900-$3,700 across nothing but an arbitrary start hour,
+versus a baseline edge of $822** - the same 3-4x ratio that killed the session filter and the stop
+width. And the windows gold's data actually prefers all start at **09:00 and run past noon**
+(best 4h = 09:00-13:00 +$1,834; best 5h = 09:00-14:00 +$2,029; best 6h = 09:00-15:00 +$1,717) -
+the opposite end of the day from the OP's premise, and the exact hours their rule excludes.
+
+**NQ - the instrument this filter actually comes from - is worse than that: the candidates rank
+20th-24th of 24, and land dead last at three of ten width/mode combinations.** Not merely
+unremarkable; on this sample the OP's hours are close to the *worst* available choice of that many
+hours. Best possible NQ rotation at any width runs from +$884 down to -$97, so there is no good
+window here to have missed either - the instrument is a loser at every hour.
+
+**Trade-count confound, checked directly:** corr(total P&L, trade count) across rotations is
+**-0.63..-0.72 on NQ** (fewer trades = less loss, so a filter's entire effect there is trading less)
+and **+0.31..+0.62 on gold** (fewer trades = *less* P&L, which cuts against filtering at all). Either
+way, P&L across rotations tracks how many trades you take, not when you take them.
+
+### P3 CONTROL - neighbourhood (start and end each shifted +/-1h)
+| anchor | instrument | span across 7 neighbours | positive |
+|---|---|---|---|
+| 07:00-12:00 | gold | $866 | 7/7 |
+| 08:00-12:00 | gold | $1,409 | 7/7 |
+| 06:00-12:00 | gold | $1,456 | 6/7 |
+| 09:30-12:00 | gold | $2,090 | 5/7 |
+| 08:00-12:00 | gold (+flat) | $2,443 | 5/7 |
+| all five | NQ | $464-$2,308 | **0/7 in every case, both modes** |
+
+Gold's neighbourhood is not a knife edge - but it is not evidence either, because the neighbours
+*include* the better 09:00-start windows (shifting 08:00-12:00 to 09:00-13:00 gives +$1,834, twice the
+anchor). A plateau that slopes steadily towards a different window is a plateau in the wrong place.
+On NQ, **no perturbation of any candidate in either mode is profitable** - 0 of 70.
+
+### P4 CONTROL - trade-count-matched random subsets (2,000 draws)
+The sharpest form of the question the standing entry-edge finding demands: **does picking these
+particular hours beat picking the same number of the same strategy's trades at random?** Baseline 24/7
+trades were resampled without replacement inside each of the 6 windows, matched to the candidate's
+per-window trade count.
+
+| window | instrument | mode | candidate | random-subset mean | control p5..p95 | percentile |
+|---|---|---|---|---|---|---|
+| 04:00-12:00 | gold | entry-only | +$395 | +$648 | -$1,491..+$2,745 | 0.42 |
+| 06:00-12:00 | gold | entry-only | +$725 | +$429 | -$1,674..+$2,569 | 0.58 |
+| 07:00-12:00 | gold | entry-only | +$936 | +$398 | -$1,620..+$2,376 | **0.67** |
+| 08:00-12:00 | gold | entry-only | +$907 | +$478 | -$1,480..+$2,464 | 0.63 |
+| 09:30-12:00 | gold | entry-only | -$149 | +$248 | -$1,349..+$1,950 | 0.34 |
+| 07:00-12:00 | gold | +flat | +$877 | +$411 | -$1,528..+$2,393 | 0.65 |
+| 08:00-12:00 | gold | +flat | +$848 | +$473 | -$1,492..+$2,523 | 0.63 |
+| 04:00-12:00 | NQ | entry-only | -$3,136 | -$2,501 | -$4,334..-$704 | 0.30 |
+| 06:00-12:00 | NQ | entry-only | -$3,442 | -$2,132 | -$3,859..-$302 | 0.11 |
+| 07:00-12:00 | NQ | entry-only | -$2,690 | -$2,033 | -$3,748..-$257 | 0.26 |
+| 08:00-12:00 | NQ | entry-only | -$2,588 | -$1,758 | -$3,342..-$83 | 0.20 |
+| 09:30-12:00 | NQ | entry-only | -$2,692 | -$1,239 | -$2,692..+$229 | **0.05** |
+
+(Remaining flat-mode rows in `data/wf_reddit_session_bootstrap.csv`; same picture, NQ 0.08-0.36.)
+
+**Gold's best candidate sits at percentile 0.67 - i.e. one in three equal-sized random trade subsets
+does better.** Nothing approaches the 0.95 that would be the bare minimum to claim these hours are
+special, and 0.95 would still be one of ~40 tests run here. **Every NQ candidate is below the median
+of random subsets, and 09:30-12:00 is at percentile 0.05 - worse than 95% of random equal-sized
+subsets of the same trades.** Selecting the OP's hours on NQ is measurably worse than selecting at
+random.
+
+(Caveat on this control: session-filtered trades are not a strict subset of baseline trades, because
+skipping an entry changes which later crosses the strategy is flat for. It is a very good
+approximation for the trade-count question, not an exact permutation test. The rotation control is
+still the load-bearing evidence.)
+
+### P5 - per-window sign consistency
+Gold, 07:00-12:00 entry-only, by window: **-$727, +$980, +$547, +$168, +$547, -$579** (4/6). Better
+spread than the baseline's two-good-weeks profile (-1,254 / +1,282 / +2,554 / -1,452 / +211 / -519),
+which is the one genuinely mildly-encouraging thing in this run - and 4/6 has a ~34% chance by
+coin-flip, so it is not evidence on its own, which is precisely why the rotation control exists.
+NQ, 08:00-12:00 entry-only: **-$420, -$354, -$540, -$142, -$806, -$326** - negative in all six.
+
+### Verdict: DISCARD. Falsified on both instruments, in both modes, at all five candidate windows.
+- **NQ/MNQ (the filter's own instrument): dead, and then some.** All 10 configs lose money, 6 of 10
+  lose in all 6 independent windows, rank 20th-24th of 24 rotations (last place 3 times), 0 of 70
+  neighbouring windows profitable, and every candidate sits below the median of trade-count-matched
+  random subsets with one at the 5th percentile. This is not "no edge found", it is the OP's hours
+  being among the worst hours available on this sample.
+- **Gold: not distinguishable from an arbitrary window of the same width.** Best candidate ranks 5th
+  of 24, sits at the 67th percentile of random equal-sized trade subsets, and is worth less than the
+  $2,900-$3,700 P&L swing produced by moving the start hour arbitrarily. The windows the data prefers
+  start at 09:00 and run *past* noon, i.e. into the hours the OP's rule excludes.
+- **Forcing flat at 12:00 changes nothing.** It moves gold down slightly and NQ up slightly and flips
+  no sign anywhere. The ~20 trades per config it force-closes are not where the outcome lives.
+- **This is a clean confirmation of the standing entry-edge finding, not an independent surprise.**
+  `nq_entry_edge.py` said in advance that the MA cross has no forward edge over random timing; a
+  filter on a zero-edge entry can only subset noise, and that is exactly what all 40 rotation ranks,
+  70 neighbours and 20 bootstrap percentiles show. **Third independent nuisance parameter (after
+  session hours and stop width) to produce a P&L spread 3-4x the strategy's entire claimed edge.**
+- **What this does NOT say.** It does not say the Reddit trader is wrong about their own results.
+  It says that bolting their session hours onto *this* mechanical MA-cross translation does not
+  reproduce them - the same translation gap already logged for their breakeven+trail description on
+  2026-09-16. If their edge is real it lives in entry selection or discretionary management that this
+  code does not represent, and the standing conclusion holds: **any further NQ work must start at the
+  entry, not at filters or exits.**
+- Live config untouched. `scripts/paper_trade.py` not modified this run.
+
+### Standing caveats (unchanged, and they cut both ways)
+60-day yfinance sample, 6 windows of ~10 calendar days, 103-1,006 trades per config, continuous
+front-month rather than a properly rolled contract. The same sample that cannot confirm an edge also
+cannot definitively refute one - but the rotation control does not depend on the sample having an
+edge to detect: it asks whether this window differs from 23 arbitrary ones *on identical data*, and
+the answer is no on gold and emphatically no on NQ. The binding constraint remains data, not ideas.
+
+Artifacts: `data/wf_reddit_session_results.csv`, `data/wf_reddit_session_rotations.csv`,
+`data/wf_reddit_session_bootstrap.csv`, `data/wf_reddit_session_neighbourhood_{gold,nq}.csv`.
