@@ -2,11 +2,13 @@
 
 MA-cross 5min strategy, adapted from an NQ/MNQ setup, being tested on gold futures (GC/MGC). **Not validated yet — see status.**
 
-## Status (2026-09-16)
+## Status (2026-09-18)
 - Baseline backtest (yfinance, 60d, GC=F): positive but cherry-picked-looking (+$1,727 on ma20/stop8/rr2).
 - Grid sweep across ma/stop/rr (45 configs, same 60d): **only 10/45 profitable, median Sharpe -1.47.** Edge is fragile / param-sensitive on this sample. Overfitting risk.
-- Experiment batch (train/test split, see RESEARCH_LOG.md): session-hours filter and regime+confirm_bars combo look most consistent train->test, but small sample (49-174 OOS trades), not proof.
-- **Paper trading IS live** (user decision, running anyway since it's fake money) — `scripts/paper_trade.py` runs every 5min via GitHub Actions (`.github/workflows/paper_trade.yml`), still on the unvalidated baseline config (ma20/stop8/rr2, no filters). Runs independent of any local machine.
+- **Session filter DISCARDED (2026-09-18).** Multi-window walk-forward (`scripts/wf_session.py`, 6 independent windows, fixed configs): baseline is profitable in only **2/6** windows — its whole +$933 is two good weeks in late July/early Aug. The session filter's apparent advantage does not survive a control test: rotating the same 8h window through all 24 start hours puts 13-21 ET **9th of 24**, with 17/24 rotations positive and a -$1,354..+$2,398 spread across arbitrary start hours. Per-hour P&L correlates **-0.34** train vs test. No stable time-of-day effect exists in this data. See RESEARCH_LOG.md.
+- **Two bugs found and fixed:** the filter logged as "NY session, 13-21 UTC" was actually 13-21 **ET** (yfinance returns US/Eastern); `load_data` was silently dropping the first 2 bars of every backtest.
+- **Live paper bot is not faithfully running the strategy.** `scripts/paper_trade.py` only inspects the latest bar per poll, and GH Actions `*/5` cron is not honoured (5-18 min intervals, one 62-min gap) — **225 runs vs 443 bars, ~51% coverage**. Half of all signals are skipped, and stops touched on skipped bars are never booked, which biases live results optimistically. Same-window backtest: -$285 / 26.7% WR vs live +$47 / 36.4%. **The live +$47 is not evidence of anything.** Fix (iterate all bars after `last_processed_bar`) not applied — awaiting user go-ahead, since it changes the running strategy.
+- Edge margin for scale: payoff is $157 win / -$83 loss ⇒ breakeven win rate **34.6%** vs measured **35.5%**. The entire claimed edge is ~1pp of win rate.
 - Still open: pull longer history (1-2yr) for real walk-forward before trusting any config or switching the live config off baseline.
 
 ## Backlog / might try later

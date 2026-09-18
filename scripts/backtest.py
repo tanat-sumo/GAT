@@ -9,7 +9,10 @@ CONTRACT_MULT = {"MGC": 10, "GC": 100, "NQ": 20, "MNQ": 2}  # $ per point per co
 
 
 def load_data(path="data/gold_5m.csv"):
-    df = pd.read_csv(path, index_col=0, parse_dates=True, header=0, skiprows=[1, 2])
+    # NOTE: previously passed skiprows=[1, 2] (left over from raw 3-row yfinance MultiIndex
+    # headers). Both saved CSVs have a single header row, so that silently discarded the first
+    # two real bars of every backtest. Harmless in magnitude (2 of ~13,700) but wrong; removed.
+    df = pd.read_csv(path, index_col=0, parse_dates=True, header=0)
     df.columns = ["close", "high", "low", "open", "volume"]
     return df[["open", "high", "low", "close", "volume"]].dropna()
 
@@ -47,6 +50,7 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
 
     position = 0  # 1 long, -1 short, 0 flat
     entry_price = None
+    entry_ts = None
     stop_price = None
     tp_price = None
     risk_pts = None
@@ -84,24 +88,24 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
                     pnl = (stop_price - entry_price) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
                     reason = "trail_stop" if (trail_mode == "ma_trail" and breakeven_hit) else "stop"
-                    trades.append({"exit_ts": ts, "side": "long", "reason": reason, "pnl": pnl})
+                    trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "long", "reason": reason, "pnl": pnl})
                     position = 0
                 elif trail_mode == "fixed" and h >= tp_price:
                     pnl = (tp_price - entry_price) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
-                    trades.append({"exit_ts": ts, "side": "long", "reason": "tp", "pnl": pnl})
+                    trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "long", "reason": "tp", "pnl": pnl})
                     position = 0
             elif position == -1:
                 if h >= stop_price:
                     pnl = (entry_price - stop_price) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
                     reason = "trail_stop" if (trail_mode == "ma_trail" and breakeven_hit) else "stop"
-                    trades.append({"exit_ts": ts, "side": "short", "reason": reason, "pnl": pnl})
+                    trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "short", "reason": reason, "pnl": pnl})
                     position = 0
                 elif trail_mode == "fixed" and l <= tp_price:
                     pnl = (entry_price - tp_price) * mult * contracts - cost_pts * mult * contracts
                     equity += pnl
-                    trades.append({"exit_ts": ts, "side": "short", "reason": "tp", "pnl": pnl})
+                    trades.append({"exit_ts": ts, "entry_ts": entry_ts, "entry_price": entry_price, "side": "short", "reason": "tp", "pnl": pnl})
                     position = 0
 
         # confirm_bars: track a pending cross and require it to hold for N consecutive bars
@@ -149,6 +153,7 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
             if crossed_up:
                 position = 1
                 entry_price = c
+                entry_ts = ts
                 stop_price = c - stop_pts
                 tp_price = c + tp_pts
                 risk_pts = stop_pts
@@ -157,6 +162,7 @@ def run_backtest(df, ma_period=20, stop_pts=8.0, tp_pts=None, rr=2.0,
             elif crossed_dn:
                 position = -1
                 entry_price = c
+                entry_ts = ts
                 stop_price = c + stop_pts
                 tp_price = c - tp_pts
                 risk_pts = stop_pts
