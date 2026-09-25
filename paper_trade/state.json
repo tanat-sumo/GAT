@@ -1,13 +1,6 @@
 {
-  "capital": 50549.0,
-  "position": {
-    "side": "short",
-    "entry_ts": "2026-09-24 22:25:00-04:00",
-    "entry_price": 4323.2998046875,
-    "stop": 4331.2998046875,
-    "tp": 4307.2998046875,
-    "contracts": 1
-  },
+  "capital": 50706.0,
+  "position": null,
   "trades": [
     {
       "side": "short",
@@ -692,9 +685,21 @@
       "exit_price": 4321.89990234375,
       "reason": "tp",
       "pnl": 157.0
+    },
+    {
+      "side": "short",
+      "entry_ts": "2026-09-24 22:25:00-04:00",
+      "entry_price": 4323.2998046875,
+      "stop": 4331.2998046875,
+      "tp": 4307.2998046875,
+      "contracts": 1,
+      "exit_ts": "2026-09-24 23:45:00-04:00",
+      "exit_price": 4307.2998046875,
+      "reason": "tp",
+      "pnl": 157.0
     }
   ],
-  "last_processed_bar": "2026-09-24 23:40:00-04:00",
+  "last_processed_bar": "2026-09-24 23:45:00-04:00",
   "config": {
     "ma_period": 20,
     "stop_pts": 8.0,
