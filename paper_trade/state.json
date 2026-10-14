@@ -1,6 +1,13 @@
 {
   "capital": 52634.0,
-  "position": null,
+  "position": {
+    "side": "long",
+    "entry_ts": "2026-10-14 06:05:00-04:00",
+    "entry_price": 4166.7998046875,
+    "stop": 4158.7998046875,
+    "tp": 4182.7998046875,
+    "contracts": 1
+  },
   "trades": [
     {
       "side": "short",
@@ -1947,7 +1954,7 @@
       "pnl": 157.0
     }
   ],
-  "last_processed_bar": "2026-10-14 05:55:00-04:00",
+  "last_processed_bar": "2026-10-14 06:25:00-04:00",
   "config": {
     "ma_period": 20,
     "stop_pts": 8.0,
