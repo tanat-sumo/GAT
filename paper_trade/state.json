@@ -1,13 +1,6 @@
 {
-  "capital": 52665.0,
-  "position": {
-    "side": "short",
-    "entry_ts": "2026-10-21 08:20:00-04:00",
-    "entry_price": 4151.60009765625,
-    "stop": 4159.60009765625,
-    "tp": 4135.60009765625,
-    "contracts": 1
-  },
+  "capital": 52416.0,
+  "position": null,
   "trades": [
     {
       "side": "short",
@@ -2468,9 +2461,45 @@
       "exit_price": 4150.39990234375,
       "reason": "tp",
       "pnl": 157.0
+    },
+    {
+      "side": "short",
+      "entry_ts": "2026-10-21 08:20:00-04:00",
+      "entry_price": 4151.60009765625,
+      "stop": 4159.60009765625,
+      "tp": 4135.60009765625,
+      "contracts": 1,
+      "exit_ts": "2026-10-21 11:25:00-04:00",
+      "exit_price": 4159.60009765625,
+      "reason": "stop",
+      "pnl": -83.0
+    },
+    {
+      "side": "short",
+      "entry_ts": "2026-10-21 12:05:00-04:00",
+      "entry_price": 4149.10009765625,
+      "stop": 4157.10009765625,
+      "tp": 4133.10009765625,
+      "contracts": 1,
+      "exit_ts": "2026-10-21 12:40:00-04:00",
+      "exit_price": 4157.10009765625,
+      "reason": "stop",
+      "pnl": -83.0
+    },
+    {
+      "side": "short",
+      "entry_ts": "2026-10-21 12:45:00-04:00",
+      "entry_price": 4151.2001953125,
+      "stop": 4159.2001953125,
+      "tp": 4135.2001953125,
+      "contracts": 1,
+      "exit_ts": "2026-10-21 14:30:00-04:00",
+      "exit_price": 4159.2001953125,
+      "reason": "stop",
+      "pnl": -83.0
     }
   ],
-  "last_processed_bar": "2026-10-21 10:25:00-04:00",
+  "last_processed_bar": "2026-10-21 14:40:00-04:00",
   "config": {
     "ma_period": 20,
     "stop_pts": 8.0,
