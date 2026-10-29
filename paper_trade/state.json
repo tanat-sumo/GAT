@@ -1,6 +1,13 @@
 {
-  "capital": 52420.0,
-  "position": null,
+  "capital": 52005.0,
+  "position": {
+    "side": "short",
+    "entry_ts": "2026-10-29 07:35:00-04:00",
+    "entry_price": 4040.0,
+    "stop": 4048.0,
+    "tp": 4024.0,
+    "contracts": 1
+  },
   "trades": [
     {
       "side": "short",
@@ -3121,9 +3128,69 @@
       "exit_price": 4048.199951171875,
       "reason": "stop",
       "pnl": -83.0
+    },
+    {
+      "side": "long",
+      "entry_ts": "2026-10-29 02:50:00-04:00",
+      "entry_price": 4044.699951171875,
+      "stop": 4036.699951171875,
+      "tp": 4060.699951171875,
+      "contracts": 1,
+      "exit_ts": "2026-10-29 03:50:00-04:00",
+      "exit_price": 4036.699951171875,
+      "reason": "stop",
+      "pnl": -83.0
+    },
+    {
+      "side": "long",
+      "entry_ts": "2026-10-29 04:00:00-04:00",
+      "entry_price": 4044.199951171875,
+      "stop": 4036.199951171875,
+      "tp": 4060.199951171875,
+      "contracts": 1,
+      "exit_ts": "2026-10-29 04:40:00-04:00",
+      "exit_price": 4036.199951171875,
+      "reason": "stop",
+      "pnl": -83.0
+    },
+    {
+      "side": "long",
+      "entry_ts": "2026-10-29 05:05:00-04:00",
+      "entry_price": 4046.60009765625,
+      "stop": 4038.60009765625,
+      "tp": 4062.60009765625,
+      "contracts": 1,
+      "exit_ts": "2026-10-29 05:15:00-04:00",
+      "exit_price": 4038.60009765625,
+      "reason": "stop",
+      "pnl": -83.0
+    },
+    {
+      "side": "short",
+      "entry_ts": "2026-10-29 05:15:00-04:00",
+      "entry_price": 4037.10009765625,
+      "stop": 4045.10009765625,
+      "tp": 4021.10009765625,
+      "contracts": 1,
+      "exit_ts": "2026-10-29 06:05:00-04:00",
+      "exit_price": 4045.10009765625,
+      "reason": "stop",
+      "pnl": -83.0
+    },
+    {
+      "side": "short",
+      "entry_ts": "2026-10-29 06:25:00-04:00",
+      "entry_price": 4039.0,
+      "stop": 4047.0,
+      "tp": 4023.0,
+      "contracts": 1,
+      "exit_ts": "2026-10-29 07:00:00-04:00",
+      "exit_price": 4047.0,
+      "reason": "stop",
+      "pnl": -83.0
     }
   ],
-  "last_processed_bar": "2026-10-29 02:20:00-04:00",
+  "last_processed_bar": "2026-10-29 09:20:00-04:00",
   "config": {
     "ma_period": 20,
     "stop_pts": 8.0,
