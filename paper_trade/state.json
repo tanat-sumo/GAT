@@ -1,5 +1,5 @@
 {
-  "capital": 51033.0,
+  "capital": 50867.0,
   "position": null,
   "trades": [
     {
@@ -4189,9 +4189,33 @@
       "exit_price": 4116.5,
       "reason": "stop",
       "pnl": -83.0
+    },
+    {
+      "side": "long",
+      "entry_ts": "2026-11-10 07:00:00-05:00",
+      "entry_price": 4084.10009765625,
+      "stop": 4076.10009765625,
+      "tp": 4100.10009765625,
+      "contracts": 1,
+      "exit_ts": "2026-11-10 08:25:00-05:00",
+      "exit_price": 4076.10009765625,
+      "reason": "stop",
+      "pnl": -83.0
+    },
+    {
+      "side": "long",
+      "entry_ts": "2026-11-10 10:10:00-05:00",
+      "entry_price": 4059.5,
+      "stop": 4051.5,
+      "tp": 4075.5,
+      "contracts": 1,
+      "exit_ts": "2026-11-10 10:45:00-05:00",
+      "exit_price": 4051.5,
+      "reason": "stop",
+      "pnl": -83.0
     }
   ],
-  "last_processed_bar": "2026-11-10 04:05:00-05:00",
+  "last_processed_bar": "2026-11-10 11:55:00-05:00",
   "config": {
     "ma_period": 20,
     "stop_pts": 8.0,
