@@ -1,6 +1,13 @@
 {
-  "capital": 50739.0,
-  "position": null,
+  "capital": 50481.0,
+  "position": {
+    "side": "long",
+    "entry_ts": "2026-11-13 09:25:00-05:00",
+    "entry_price": 3892.0,
+    "stop": 3884.0,
+    "tp": 3908.0,
+    "contracts": 1
+  },
   "trades": [
     {
       "side": "short",
@@ -4405,9 +4412,81 @@
       "exit_price": 3900.39990234375,
       "reason": "tp",
       "pnl": 157.0
+    },
+    {
+      "side": "long",
+      "entry_ts": "2026-11-13 02:05:00-05:00",
+      "entry_price": 3905.0,
+      "stop": 3897.0,
+      "tp": 3921.0,
+      "contracts": 1,
+      "exit_ts": "2026-11-13 03:20:00-05:00",
+      "exit_price": 3897.0,
+      "reason": "stop",
+      "pnl": -83.0
+    },
+    {
+      "side": "long",
+      "entry_ts": "2026-11-13 03:50:00-05:00",
+      "entry_price": 3902.0,
+      "stop": 3894.0,
+      "tp": 3918.0,
+      "contracts": 1,
+      "exit_ts": "2026-11-13 05:45:00-05:00",
+      "exit_price": 3894.0,
+      "reason": "stop",
+      "pnl": -83.0
+    },
+    {
+      "side": "long",
+      "entry_ts": "2026-11-13 06:50:00-05:00",
+      "entry_price": 3900.800048828125,
+      "stop": 3892.800048828125,
+      "tp": 3916.800048828125,
+      "contracts": 1,
+      "exit_ts": "2026-11-13 07:40:00-05:00",
+      "exit_price": 3892.800048828125,
+      "reason": "stop",
+      "pnl": -83.0
+    },
+    {
+      "side": "long",
+      "entry_ts": "2026-11-13 08:00:00-05:00",
+      "entry_price": 3896.5,
+      "stop": 3888.5,
+      "tp": 3912.5,
+      "contracts": 1,
+      "exit_ts": "2026-11-13 08:15:00-05:00",
+      "exit_price": 3888.5,
+      "reason": "stop",
+      "pnl": -83.0
+    },
+    {
+      "side": "long",
+      "entry_ts": "2026-11-13 08:30:00-05:00",
+      "entry_price": 3908.60009765625,
+      "stop": 3900.60009765625,
+      "tp": 3924.60009765625,
+      "contracts": 1,
+      "exit_ts": "2026-11-13 08:35:00-05:00",
+      "exit_price": 3900.60009765625,
+      "reason": "stop",
+      "pnl": -83.0
+    },
+    {
+      "side": "short",
+      "entry_ts": "2026-11-13 08:40:00-05:00",
+      "entry_price": 3892.199951171875,
+      "stop": 3900.199951171875,
+      "tp": 3876.199951171875,
+      "contracts": 1,
+      "exit_ts": "2026-11-13 08:50:00-05:00",
+      "exit_price": 3876.199951171875,
+      "reason": "tp",
+      "pnl": 157.0
     }
   ],
-  "last_processed_bar": "2026-11-13 01:25:00-05:00",
+  "last_processed_bar": "2026-11-13 09:40:00-05:00",
   "config": {
     "ma_period": 20,
     "stop_pts": 8.0,
